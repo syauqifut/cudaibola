@@ -1,0 +1,69 @@
+---
+description: Struktur folder dan separation of concern antara backend logic dan UI
+globs: ["app/**/*", "lib/**/*", "components/**/*"]
+---
+
+# Struktur folder
+
+```
+app/                    # Routing & UI (Next.js App Router)
+  api/.../route.ts       # Pintu masuk TIPIS ke lib/server — parse request, panggil service, return
+
+lib/
+  server/                # BACKEND MURNI — tidak ada JSX, tidak import React/Next UI APIs
+    matches/
+      service.ts         # business logic (getTodayMatches, dst)
+      repository.ts      # satu-satunya layer yang query ke Drizzle/DB
+      grouping.ts
+    predictions/
+      service.ts         # submitPrediction() — validasi lock time, simpan
+      repository.ts
+      scoring.ts         # hitung poin sesuai SPEC.md bagian 4
+    leaderboard/
+      service.ts
+      repository.ts
+    sync/
+      service.ts         # syncMatchesFromProvider(), dipanggil cron
+      football-data-client.ts
+    identity/
+      session.ts         # helper validasi/parse userId dari request (bukan auth asli)
+
+  db/
+    schema.ts            # Drizzle schema
+    client.ts             # koneksi DB singleton
+
+  shared/
+    types.ts              # tipe dipakai FE & BE
+    constants.ts           # SCORING_RULES, COMPETITION_PRIORITY
+
+components/              # FRONTEND MURNI
+  match-list/
+  prediction/
+  ui/
+```
+
+## Aturan wajib (hard rules, bukan saran)
+
+1. File di `lib/server/**` TIDAK BOLEH mengandung `'use client'` dan TIDAK BOLEH import dari
+   `components/**`.
+2. File di `components/**` TIDAK BOLEH import langsung dari `lib/db/**` atau dari
+   `lib/server/**/repository.ts`. Kalau Client Component butuh data, lewat `fetch('/api/...')`.
+3. Server Component (di `app/**/page.tsx` tanpa `'use client'`) BOLEH memanggil `service.ts`
+   langsung — tidak perlu lewat `/api/` untuk kasus ini.
+4. Satu domain = satu folder di `lib/server/` dengan maksimal isi: `service.ts`, `repository.ts`,
+   dan file pendukung domain itu saja (misal `scoring.ts` untuk predictions). Jangan gabung
+   beberapa domain ke satu file besar.
+5. `app/api/**/route.ts` maksimal berisi: parsing request (body/query/params), panggil satu
+   function dari `service.ts`, return response. Tidak ada business logic, tidak ada query
+   database langsung di file route ini.
+6. Semua akses database (select/insert/update/delete) HANYA boleh terjadi di file
+   `repository.ts`. `service.ts` tidak pernah memanggil Drizzle langsung.
+
+## Kalau ragu menaruh kode di mana
+
+- Ada query database baru? → `repository.ts` domain terkait.
+- Ada aturan bisnis baru (misal cara hitung poin berubah)? → `service.ts` atau file pendukung
+  seperti `scoring.ts`, BUKAN di route handler atau component.
+- Ada komponen tampilan baru? → `components/`, dan kalau butuh data, terima sebagai props dari
+  Server Component pemanggilnya — jangan fetch sendiri di dalam component kecuali memang harus
+  client-side (misal re-fetch setelah submit).

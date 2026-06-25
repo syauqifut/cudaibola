@@ -1,0 +1,42 @@
+---
+description: Overview proyek, stack, dan aturan dasar yang selalu berlaku
+alwaysApply: true
+---
+
+# Proyek: Aplikasi Prediksi Bola (poin, bukan uang asli)
+
+Sebelum mengerjakan apa pun, baca `SPEC.md` di root project. SPEC.md adalah sumber kebenaran
+untuk kebutuhan fitur. Kalau instruksi di chat bertentangan dengan SPEC.md, tanya ke user dulu,
+jangan langsung override.
+
+## Stack yang dipakai (jangan ganti tanpa konfirmasi user)
+
+- Next.js App Router (TypeScript)
+- PostgreSQL via Drizzle ORM (BUKAN Prisma)
+- Tailwind CSS untuk styling
+- Tidak ada NextAuth/Auth.js — identitas user hanya via localStorage, lihat SPEC.md bagian 3
+- Deploy target: Vercel (free tier) + Neon/Supabase Postgres (free tier)
+
+## Batasan keras (hard constraints)
+
+- JANGAN pernah menambahkan fitur yang menyentuh uang asli: payment gateway, top-up, withdraw,
+  konversi poin ke nilai apa pun. Ini bukan preferensi gaya, ini batasan produk. Kalau merasa
+  fitur seperti ini "akan membantu UX", tetap jangan — tanya user dulu.
+- JANGAN bikin sistem auth penuh (password, email verification, OAuth) kecuali user secara
+  eksplisit minta. Default-nya tetap nickname + localStorage seperti di SPEC.md.
+- JANGAN ubah skema poin (+3 / +1 / 0) di SPEC.md bagian 4 tanpa konfirmasi eksplisit dari user.
+- JANGAN polling API eksternal (football-data.org dll) langsung dari request user / client
+  component. Selalu lewat database sendiri yang di-refresh oleh cron job.
+- JANGAN hardcode API key atau connection string di kode. Selalu lewat environment variable.
+
+## Cara kerja yang diharapkan
+
+- Kerjakan task secara bertahap sesuai urutan di SPEC.md bagian 6, jangan coba implement semua
+  fitur sekaligus dalam satu sesi/PR besar.
+- Setelah selesai satu task, ringkas apa yang diubah dan file apa yang disentuh, sebelum lanjut
+  ke task berikutnya.
+- Kalau ada keputusan desain yang tidak diatur di SPEC.md (misal: format tanggal, urutan
+  kompetisi di homepage), buat keputusan masuk akal sendiri, sebutkan asumsinya secara singkat,
+  lalu lanjut — tidak perlu berhenti untuk hal kecil seperti ini.
+- Kalau keputusan menyentuh hal yang sudah dikunci di SPEC.md (skema poin, non-goals, lock time
+  rule), JANGAN improvisasi — berhenti dan tanya.

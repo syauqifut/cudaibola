@@ -1,0 +1,251 @@
+---
+description: Aturan spesifik untuk identity (non-auth), scoring, sync data eksternal, dan timezone
+globs: ["lib/server/identity/**", "lib/server/predictions/**", "lib/server/sync/**", "lib/server/matches/**"]
+---
+
+# Timezone (lib/server/matches/ dan lib/shared/)
+
+Prinsip: **simpan selalu dalam UTC, konversi ke timezone tujuan hanya saat render/query
+"hari ini" — jangan pernah menyimpan versi waktu yang sudah dikonversi ke database.**
+
+Alasan: kalau versi terkonversi yang disimpan, data lama jadi salah begitu timezone acuan
+berubah (misal audience berubah, atau ada user dari zona lain). Dengan menyimpan UTC mentah,
+"hari ini" selalu benar untuk siapa pun yang membuka app, kapan pun dibuka.
+
+## Field `date` dari Highlightly sudah UTC — jangan dikonversi saat sync
+
+`match.date` dari response Highlightly berformat ISO 8601 dengan suffix `Z`
+(contoh: `"2023-05-20T15:30:00.000Z"`) — ini SUDAH UTC. Simpan apa adanya ke kolom
+`matches.kickoffTime` (tipe `timestamp` tanpa konversi apa pun). JANGAN memanggil parameter
+query `timezone` milik Highlightly saat fetch data untuk sync — biarkan default
+(`Etc/UTC`) supaya konsisten, lalu konversi ke timezone tujuan dilakukan sendiri di kode kita,
+bukan diserahkan ke provider.
+
+## Timezone acuan aplikasi
+
+Definisikan satu konstanta timezone acuan di `lib/shared/constants.ts`:
+
+```ts
+export const APP_TIMEZONE = 'Asia/Jakarta'; // WIB — ubah di sini saja kalau audience berubah
+```
+
+Semua logic "match hari ini", "besok", dst HARUS memakai konstanta ini, jangan hardcode
+`'Asia/Jakarta'` berulang-ulang di file lain. Kalau nanti audience berubah (misal app dipakai
+juga oleh teman di timezone lain), titik ubahnya cuma di sini.
+
+## Query "match hari ini" — dihitung di kode aplikasi, bukan di SQL mentah
+
+Jangan pakai `kickoff_time::date = CURRENT_DATE` di SQL — itu memakai timezone server database
+(biasanya UTC), bukan `APP_TIMEZONE`, dan akan salah menjelang tengah malam.
+
+Cara yang benar: hitung rentang awal & akhir hari dalam `APP_TIMEZONE`, konversi ke UTC, baru
+query dengan rentang itu. Gunakan library `date-fns-tz` (atau `Temporal` kalau sudah tersedia
+di runtime) untuk konversi ini — jangan hitung offset manual dengan `+7` di kode, itu rawan
+salah saat daylight saving di provider lain atau saat ada perubahan kebijakan zona.
+
+```ts
+import { startOfDay, endOfDay } from 'date-fns';
+import { fromZonedTime } from 'date-fns-tz';
+import { APP_TIMEZONE } from '@/lib/shared/constants';
+
+function getTodayRangeUtc(now: Date = new Date()) {
+  // "Hari ini" dihitung berdasarkan tanggal saat ini DI APP_TIMEZONE, bukan di server.
+  const todayInAppTz = startOfDay(now); // perlu di-resolve dulu terhadap APP_TIMEZONE
+  const start = fromZonedTime(startOfDay(now), APP_TIMEZONE);
+  const end = fromZonedTime(endOfDay(now), APP_TIMEZONE);
+  return { start, end };
+}
+```
+
+(Detail implementasi pasti boleh disesuaikan Cursor, tapi prinsipnya WAJIB: hitung rentang
+hari berdasarkan `APP_TIMEZONE`, konversi ke UTC, baru dipakai sebagai filter query ke kolom
+`kickoffTime` yang UTC.)
+
+## Cakupan "match hari ini" di homepage — jangan cuma sampai jam 00:00 lokal
+
+Supaya user tidak perlu menunggu pukul 00:00 untuk melihat match besok (kebanyakan match World
+Cup kickoff malam WIB karena perbedaan zona dengan venue), homepage menampilkan:
+
+- Semua match dengan `kickoffTime` antara **awal hari ini (00:00 `APP_TIMEZONE`)** sampai
+  **akhir hari ini (23:59 `APP_TIMEZONE`)** — bukan jendela 24 jam bergulir dari waktu saat ini.
+- Match yang masih `live` dari kemarin (kalau ada, kasus jarang tapi mungkin untuk pertandingan
+  yang lewat tengah malam) tetap ditampilkan di paling atas terlepas dari tanggalnya — cek
+  `status === 'live'` dulu sebelum cek rentang tanggal.
+- Tidak perlu UI date-picker di MVP (lihat DESIGN.md — homepage scope-nya "hari ini" saja).
+
+## Menampilkan jam ke user — selalu di `APP_TIMEZONE`, format konsisten
+
+Komponen yang menampilkan `kickoffTime` (badge jam di match list, jam kickoff di popup detail)
+HARUS mengkonversi dari UTC ke `APP_TIMEZONE` sebelum ditampilkan, format 24 jam (`HH:mm`,
+contoh "15:00"), bukan format AM/PM. Lakukan konversi ini sekali di satu util terpusat
+(`lib/shared/format-time.ts`), jangan format tanggal manual berulang-ulang di tiap komponen.
+
+# Identity (lib/server/identity/)
+
+Ini BUKAN sistem auth. Tidak ada password, tidak ada session server-side yang aman.
+
+- `userId` adalah UUID yang di-generate di client saat pertama kali buka app, disimpan di
+  localStorage, dan dikirim oleh client di setiap request yang butuh identitas (submit
+  prediksi, lihat prediksi sendiri).
+- Server HANYA memvalidasi *format* UUID, tidak memvalidasi keaslian/kepemilikan. Jangan
+  menambahkan logic yang berpura-pura ini aman secara auth (misal: jangan kasih komentar
+  "// TODO: ini harusnya pakai JWT" — ini bukan TODO, ini keputusan produk yang sudah final
+  di SPEC.md).
+- Nickname disimpan di tabel `users` bersama `userId`, ditampilkan di leaderboard.
+
+# Scoring (lib/server/predictions/scoring.ts)
+
+Implementasikan PERSIS sesuai SPEC.md bagian 4:
+
+```ts
+function calculatePoints(predicted: {home: number, away: number}, actual: {home: number, away: number}): number {
+  if (predicted.home === actual.home && predicted.away === actual.away) return 3;
+
+  const predictedResult = getResult(predicted); // 'home' | 'draw' | 'away'
+  const actualResult = getResult(actual);
+  if (predictedResult === actualResult) return 1;
+
+  return 0;
+}
+```
+
+- Tidak ada poin negatif di mana pun dalam kode ini.
+- Lock time check (prediksi tidak bisa disubmit/diedit setelah match live) WAJIB divalidasi di
+  `service.ts`, bukan hanya di UI. Anggap setiap request ke endpoint submit prediksi bisa datang
+  dari luar UI normal (curl, Postman, dst).
+
+# Sync data eksternal — provider: Highlightly (lib/server/sync/)
+
+Provider yang dipakai adalah **Highlightly Football API**. Detail teknis di bawah ini sudah
+dicek dari dokumentasi resmi — jangan menebak struktur response, ikuti ini persis.
+
+## Aturan struktur kode (tetap berlaku, sama seperti provider lain)
+
+- Semua pemanggilan ke Highlightly HANYA terjadi di `highlightly-client.ts` dan HANYA dipanggil
+  dari `sync/service.ts` — tidak pernah langsung dari route handler, apalagi dari component.
+- Hasil sync ditulis ke tabel `matches` sendiri. Endpoint/Server Component lain selalu membaca
+  dari tabel ini, tidak pernah fetch langsung ke Highlightly.
+- API key dibaca dari `process.env.HIGHLIGHTLY_API_KEY`. Kalau env var ini tidak ada, fungsi
+  sync harus throw error yang jelas saat dipanggil, bukan diam-diam gagal.
+
+## Autentikasi & base URL
+
+- Base URL: `https://soccer.highlightly.net` (akses langsung Highlightly, bukan lewat RapidAPI).
+- Setiap request WAJIB menyertakan header `x-rapidapi-key: <HIGHLIGHTLY_API_KEY>`.
+  Header `x-rapidapi-host` HANYA diperlukan kalau base URL yang dipakai adalah
+  `football-highlights-api.p.rapidapi.com` (rute RapidAPI) — kalau pakai base URL Highlightly
+  langsung, header ini tidak perlu dikirim.
+- Baca header response `x-ratelimit-requests-remaining` setiap kali request berhasil dan log
+  kalau nilainya sudah rendah (< 10) — ini sinyal untuk memperlambat frekuensi sync, bukan
+  retry lebih agresif.
+
+## Endpoint yang dipakai untuk MVP
+
+| Kebutuhan | Endpoint | Catatan |
+|---|---|---|
+| List pertandingan (untuk sync ke tabel `matches`) | `GET /matches` | Wajib isi minimal satu primary query param (`leagueId`, `date`, dst — `timezone`/`limit`/`offset` saja tidak cukup). Refresh interval dari provider: sekali per menit. |
+| Detail satu match (kalau perlu data tambahan) | `GET /matches/{id}` | Berisi `events` juga, tapi endpoint live events terpisah lebih ringan untuk polling sering. |
+| Event/jalannya gol (opsional, lihat SPEC.md & DESIGN.md) | `GET /events/{matchId}` | Refresh interval: sekali per menit. Filter response untuk `type: "Goal"` dan `"Own Goal"` saja — event lain (kartu, substitusi) tidak dipakai di MVP. |
+
+Endpoint `lineups`, `odds`, `predictions`, `statistics`, `box-score` TIDAK dipakai di MVP —
+sesuai keputusan skip line-up dan non-goals di SPEC.md (tidak ada fitur odds/betting).
+
+## Mapping response Highlightly → schema internal kita
+
+Response `/matches` membungkus hasil dalam `{ data: [...], pagination: {...}, plan: {...} }`.
+Tiap match punya bentuk kira-kira:
+
+```json
+{
+  "id": 489389,
+  "round": "Regular Season - 32",
+  "date": "2023-05-20T15:30:00.000Z",
+  "homeTeam": { "id": 553, "name": "Montpellier", "logo": "..." },
+  "awayTeam": { "id": 553, "name": "...", "logo": "..." },
+  "league": { "id": 133, "season": 2023, "name": "Ligue 1", "logo": "..." },
+  "state": {
+    "description": "Second half",
+    "clock": 67,
+    "score": { "current": "3 - 1" }
+  }
+}
+```
+
+Mapping wajib ke tabel kita (lakukan di `sync/service.ts`, bukan di repository):
+
+- `match.id` → `matches.providerMatchId` (di-stringify)
+- `match.league.id` → cocokkan/upsert ke `competitions.providerCompetitionId`
+- `match.league.name` → `competitions.name`
+- `match.round` → `matches.roundName`
+- `match.date` → `matches.kickoffTime`
+- `match.homeTeam.name` / `match.awayTeam.name` → `matches.homeTeamName` / `awayTeamName`
+- `match.homeTeam.logo` / `match.awayTeam.logo` → `matches.homeTeamLogoUrl` / `awayTeamLogoUrl`
+- `match.state.clock` → `matches.minute`
+
+**Mapping status — WAJIB pakai fungsi terpusat, jangan if-else berserakan:**
+
+`match.state.description` adalah string bebas dari provider (lihat tabel state lengkap di
+dokumentasi: "Not started", "First half", "Second half", "Half time", "Extra time",
+"Break time", "Penalties", "Finished", "Finished after penalties", "Finished after extra time",
+"Postponed", "Suspended", "Cancelled", "Awarded", "Interrupted", "Abandoned", "In progress",
+"Unknown", "To be announced"). Buat satu fungsi `mapProviderStatus()` di
+`sync/highlightly-client.ts` yang memetakan semua string ini ke enum internal kita
+(`scheduled | live | finished`):
+
+```ts
+function mapProviderStatus(description: string): 'scheduled' | 'live' | 'finished' {
+  const liveStates = ['First half', 'Second half', 'Half time', 'Extra time', 'Break time',
+                       'Penalties', 'In progress', 'Suspended', 'Interrupted'];
+  const finishedStates = ['Finished', 'Finished after penalties', 'Finished after extra time',
+                           'Awarded', 'Abandoned', 'Cancelled'];
+
+  if (finishedStates.includes(description)) return 'finished';
+  if (liveStates.includes(description)) return 'live';
+  return 'scheduled'; // termasuk "Not started", "Postponed", "To be announced", "Unknown"
+}
+```
+
+Kalau muncul status baru yang tidak ada di daftar ini (provider menambah state baru), default
+ke `'scheduled'` daripada crash — lebih aman menampilkan match sebagai "belum mulai" daripada
+salah mengunci prediksi padahal match belum benar-benar live.
+
+**Parsing skor — WAJIB di-parse, jangan disimpan sebagai string:**
+
+`state.score.current` datang sebagai string `"3 - 1"` (format `"{home} - {away}"`), bukan dua
+angka terpisah. Tabel `matches` kita menyimpan `homeScore`/`awayScore` sebagai integer terpisah
+(lihat schema.ts) — parse dulu sebelum insert/update:
+
+```ts
+function parseScore(current: string | undefined): { home: number | null; away: number | null } {
+  if (!current) return { home: null, away: null };
+  const [home, away] = current.split('-').map(s => parseInt(s.trim(), 10));
+  return { home: isNaN(home) ? null : home, away: isNaN(away) ? null : away };
+}
+```
+
+Field `state.score.penalties` (skor adu penalti) TIDAK dipakai di MVP — skema poin kita
+berdasarkan skor waktu normal, bukan hasil penalti.
+
+## Event gol (opsional — konsisten dengan keputusan skip line-up)
+
+- Panggil `GET /events/{matchId}` HANYA untuk match yang sedang `live` atau `finished` — jangan
+  panggil untuk match yang masih `scheduled` (buang-buang quota).
+- Response berupa array event mentah (goal, kartu, substitusi, dst). Filter di
+  `sync/service.ts` untuk ambil `type: "Goal"` dan `type: "Own Goal"` saja sebelum dikirim ke
+  frontend.
+- Kalau request ke endpoint ini gagal atau hasilnya kosong, JANGAN gagalkan seluruh proses sync
+  match utama. Tangkap error secara terpisah, biarkan field event kosong — UI sudah dirancang
+  untuk menyembunyikan section ini kalau kosong (lihat DESIGN.md).
+- Field `player`, `time`, dan `team.name` dari event dipakai untuk tampilan "Jalannya gol" di
+  popup detail match. Field lain (`assist`, `playerId`, `substituted`) tidak dipakai di MVP.
+
+## Frekuensi cron sync (acuan dari refresh interval resmi provider)
+
+- Sync `/matches` (list + status + skor): jalankan **setiap 1 menit** saat ada match yang
+  sedang berlangsung hari itu, atau **setiap 15-30 menit** kalau tidak ada match live (hemat
+  quota saat sepi).
+- Sync `/events/{matchId}` untuk match live: **setiap 1 menit**, hanya untuk match yang
+  `status: live`.
+- Free tier Highlightly: 100 request/hari. Dengan banyak match berjalan bersamaan (musim World
+  Cup bisa ada beberapa match live sekaligus), hitung budget request sebelum menambah frekuensi
+  polling — jangan asumsikan quota selalu cukup tanpa dihitung dulu.

@@ -1,0 +1,166 @@
+---
+description: Aturan untuk edge case yang sering terlewat -- idempotency sync, kapan scoring dipicu, validasi input, error/empty state, dan race condition di lock time
+globs: ["lib/server/**", "components/**", "app/**"]
+---
+
+# 1. Idempotency & locking sync job (lib/server/sync/)
+
+Cron sync jalan sesering 1 menit. Kalau satu eksekusi belum selesai (network lambat ke
+Highlightly) dan eksekusi berikutnya sudah dipicu, dua proses bisa menulis ke tabel `matches`
+secara bersamaan dan saling tumpang tindih.
+
+**Wajib ada lock sederhana sebelum sync job mulai jalan:**
+
+- Tambahkan satu baris status di tabel kecil terpisah (atau pakai advisory lock Postgres,
+  `pg_try_advisory_lock`) yang menandai "sync sedang berjalan".
+- Di awal `sync/service.ts`, fungsi `syncMatchesFromProvider()` HARUS:
+  1. Cek apakah lock sedang aktif. Kalau iya, log "sync sebelumnya masih berjalan, skip" dan
+     `return` — jangan jalankan sync kedua.
+  2. Kalau tidak ada lock aktif, set lock, lalu jalankan sync.
+  3. Lepas lock di blok `finally`, supaya tetap terlepas walau sync gagal di tengah jalan
+     (jangan sampai lock "macet" selamanya kalau ada error tak terduga).
+- Contoh pola dengan advisory lock (lebih simpel daripada tabel terpisah, tidak butuh migration
+  tambahan):
+
+```ts
+const SYNC_LOCK_KEY = 911234; // angka unik sembarang untuk advisory lock ini
+
+async function syncMatchesFromProvider() {
+  const lockResult = await db.execute(sql`SELECT pg_try_advisory_lock(${SYNC_LOCK_KEY})`);
+  const gotLock = lockResult.rows[0]?.pg_try_advisory_lock;
+
+  if (!gotLock) {
+    console.log('Sync sebelumnya masih berjalan, skip eksekusi ini.');
+    return;
+  }
+
+  try {
+    // ...logic sync utama...
+  } finally {
+    await db.execute(sql`SELECT pg_advisory_unlock(${SYNC_LOCK_KEY})`);
+  }
+}
+```
+
+- Upsert per match (berdasarkan `providerMatchId`) WAJIB pakai operasi atomic
+  (`INSERT ... ON CONFLICT DO UPDATE` di Drizzle), bukan "cek dulu pakai SELECT, baru
+  INSERT/UPDATE terpisah" — pola cek-lalu-tulis rawan race condition walau sudah ada lock di
+  level job, karena tetap mungkin ada dua match diproses bersamaan dalam satu sync run kalau
+  diparalelkan.
+
+# 2. Kapan job scoring dipicu (lib/server/sync/service.ts → lib/server/predictions/scoring.ts)
+
+Scoring TIDAK dipicu oleh proses terpisah/terjadwal sendiri. Scoring dipicu **langsung di
+dalam sync job**, sebagai langkah lanjutan setiap kali sync mendeteksi sebuah match baru
+berubah status menjadi `finished`.
+
+Alur wajib di `sync/service.ts`:
+
+```ts
+async function syncMatchesFromProvider() {
+  // ...lock, fetch dari Highlightly...
+
+  for (const matchData of fetchedMatches) {
+    const previousStatus = await getCurrentStatus(matchData.providerMatchId); // sebelum di-upsert
+    const newStatus = mapProviderStatus(matchData.state.description);
+
+    await upsertMatch(matchData); // tulis status baru ke DB
+
+    // Trigger scoring HANYA pada transisi status, bukan setiap kali sync (match yang sudah
+    // finished dari sync sebelumnya tidak perlu dihitung ulang setiap menit).
+    if (previousStatus !== 'finished' && newStatus === 'finished') {
+      await calculateAndSavePointsForMatch(matchId); // dari predictions/service.ts
+    }
+  }
+}
+```
+
+Aturan tambahan:
+- `calculateAndSavePointsForMatch()` WAJIB idempotent — kalau dipanggil dua kali untuk match
+  yang sama (misal karena bug atau retry), hasilnya harus sama, bukan menambah poin berlapis.
+  Implementasikan sebagai UPDATE nilai `pointsEarned` (overwrite), bukan increment/tambah.
+- Kalau ada banyak prediksi untuk satu match, proses dalam satu transaction per match (bukan
+  satu transaction untuk seluruh sync run) — supaya kalau satu match gagal dihitung, match lain
+  tetap berhasil.
+- JANGAN bikin cron job terpisah khusus untuk scoring. Satu sumber kebenaran soal "kapan
+  dihitung" itu cukup: tepat saat sync mendeteksi transisi ke `finished`.
+
+# 3. Validasi input form prediksi (lib/server/predictions/service.ts)
+
+Validasi WAJIB di server (`service.ts`), tidak cukup hanya di client/UI — anggap request bisa
+datang dari luar form normal.
+
+Batas yang dikunci:
+- `predictedHomeScore` dan `predictedAwayScore` harus integer, **0 sampai 20 inklusif**. Skor
+  sepak bola realistis tidak pernah mendekati itu, tapi batas ini cukup longgar untuk skor
+  ekstrem (misal kemenangan WO 9-0) sambil tetap menolak input nyasar seperti `99` atau negatif.
+- Tolak nilai negatif, desimal, `NaN`, atau bukan integer — return error yang jelas, bukan
+  membulatkan/mengoreksi diam-diam.
+- Tolak submit kalau `matchId` yang dirujuk tidak ditemukan di tabel `matches`.
+- Tolak submit kalau status match saat request diterima BUKAN `scheduled` (lihat poin 5 di
+  bawah soal race condition lock time).
+
+Contoh validasi minimal (boleh pakai Zod untuk ini, konsisten dengan validasi lain di project):
+
+```ts
+const predictionInputSchema = z.object({
+  matchId: z.string().uuid(),
+  userId: z.string().uuid(),
+  predictedHomeScore: z.number().int().min(0).max(20),
+  predictedAwayScore: z.number().int().min(0).max(20),
+});
+```
+
+Pesan error harus dalam bahasa yang sama dengan UI (Indonesia), ditulis dari sudut pandang apa
+yang salah dan bagaimana memperbaikinya — bukan pesan generik "invalid input". Contoh:
+"Skor harus berupa angka 0 sampai 20."
+
+# 4. Error & empty state di UI (components/match-list, components/prediction)
+
+Ikuti prinsip dari skill frontend-design: error tidak meminta maaf, dan tidak vague soal apa
+yang terjadi. Empty state adalah undangan bertindak, bukan dead-end.
+
+**Kalau sync gagal total dan tabel `matches` kosong untuk hari ini:**
+- Tampilkan pesan eksplisit di tempat match list biasanya muncul: "Belum ada data pertandingan
+  untuk hari ini." — bukan halaman blank atau skeleton loading yang berputar selamanya.
+- Sertakan tombol "Muat ulang" yang memicu re-fetch dari `/api/matches`, bukan hard refresh
+  seluruh halaman.
+- JANGAN menampilkan error teknis mentah (stack trace, response error dari Highlightly) ke
+  user. Log detail error itu di server, tampilkan pesan generik ke user.
+
+**Kalau localStorage belum ada `userId`/nickname (kunjungan pertama):**
+- Ini bukan error — ini state normal pertama kali. Tampilkan prompt nickname (lihat SPEC.md
+  bagian 3) sebagai langkah pertama yang harus diselesaikan sebelum melihat/menggunakan fitur
+  prediksi, bukan modal terpisah yang bisa di-skip.
+- Match list tetap bisa dilihat tanpa nickname (read-only), tapi tombol/area submit prediksi di
+  popup detail match menampilkan prompt untuk isi nickname dulu, bukan disable tanpa penjelasan.
+
+**Kalau submit prediksi gagal (network error, validasi server gagal):**
+- Tampilkan pesan error di dalam popup yang sama, dekat dengan form — jangan tutup popup
+  otomatis atau pindah ke halaman lain.
+- Input yang sudah diisi user TIDAK boleh hilang/reset saat submit gagal — biarkan user
+  langsung coba lagi tanpa mengetik ulang.
+
+# 5. Race condition: submit tepat saat kickoff (lib/server/predictions/service.ts)
+
+Skenario: user menekan submit pada detik yang sama match berubah status dari `scheduled` ke
+`live` (sync job mengubah status di antara saat form dibuka dan saat submit diterima server).
+
+**Aturan yang menang: status di database pada saat request diterima server, bukan status yang
+terlihat di UI saat user menekan tombol.**
+
+Implementasi wajib di `submitPrediction()`:
+1. Baca status match TERBARU dari database tepat sebelum menulis prediksi (jangan percaya pada
+   status yang dikirim dari client, dan jangan pakai status yang sudah di-cache di memory dari
+   request sebelumnya).
+2. Kalau status sudah bukan `scheduled` lagi, tolak submit dengan pesan jelas: "Pertandingan
+   sudah dimulai, tebakan tidak bisa lagi diubah." — bukan error generik.
+3. Lakukan pengecekan status dan penulisan prediksi dalam satu transaction (`SELECT ... FOR
+   UPDATE` pada baris match, atau minimal transaction yang membaca status match dan menulis
+   prediksi sebagai satu unit) supaya tidak ada jendela waktu antara "cek status" dan "tulis
+   prediksi" yang bisa diselip oleh sync job yang mengubah status di tengah-tengah.
+
+Ini berarti: kemungkinan kecil ada user yang submit tepat di linimasa kickoff dan mendapat
+penolakan walau menurutnya "baru saja" klik sebelum kickoff. Ini bukan bug — ini adalah
+trade-off yang sengaja dipilih demi konsistensi data (lebih baik menolak satu submit borderline
+daripada mengizinkan prediksi yang ditulis setelah match sebenarnya sudah berjalan).
