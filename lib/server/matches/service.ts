@@ -1,10 +1,15 @@
 import { groupMatchesByCompetition } from '@/lib/server/matches/grouping';
-import { findTodayMatches } from '@/lib/server/matches/repository';
-import { getTodayRangeUtc } from '@/lib/shared/format-time';
+import { findMatchesForDate } from '@/lib/server/matches/repository';
+import { getDateRangeUtc, isSameAppDay } from '@/lib/shared/format-time';
 import type { CompetitionMatchGroup } from '@/lib/shared/types';
 
-export async function getTodayMatches(): Promise<CompetitionMatchGroup[]> {
-  const { start, end } = getTodayRangeUtc();
-  const matches = await findTodayMatches(start, end);
-  return groupMatchesByCompetition(matches);
+export async function getMatchesForDate(
+  targetDate: Date = new Date(),
+): Promise<CompetitionMatchGroup[]> {
+  const { start, end } = getDateRangeUtc(targetDate);
+  const isToday = isSameAppDay(targetDate, new Date());
+
+  // includeLive (OR status=live) hanya saat targetDate = hari ini.
+  const matches = await findMatchesForDate(start, end, isToday);
+  return groupMatchesByCompetition(matches, isToday);
 }

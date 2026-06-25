@@ -10,6 +10,7 @@ import {
   type PredictionRecord,
 } from '@/lib/server/predictions/repository';
 import { calculatePoints } from '@/lib/server/predictions/scoring';
+import { getCurrentSeason } from '@/lib/server/season/service';
 
 const SCORE_MIN = 0;
 const SCORE_MAX = 20;
@@ -89,7 +90,11 @@ export async function submitPrediction(
       );
     }
 
-    return upsertPrediction(tx, input);
+    // Season aktif saat prediksi DIBUAT — dikunci ke baris baru. Untuk edit (upsert pada
+    // prediksi yang sudah ada), seasonId existing dipertahankan oleh repository (tidak di-update).
+    const season = await getCurrentSeason();
+
+    return upsertPrediction(tx, { ...input, seasonId: season.id });
   });
 }
 

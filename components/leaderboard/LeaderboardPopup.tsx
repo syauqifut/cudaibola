@@ -51,6 +51,7 @@ function LeaderboardRow({
 export function LeaderboardPopup({ onClose }: LeaderboardPopupProps) {
   const { identity } = useIdentity();
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
+  const [seasonLabel, setSeasonLabel] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -64,6 +65,7 @@ export function LeaderboardPopup({ onClose }: LeaderboardPopupProps) {
       try {
         const response = await fetch('/api/leaderboard');
         const data = (await response.json()) as {
+          seasonLabel?: string;
           entries?: LeaderboardEntry[];
           error?: string;
         };
@@ -74,6 +76,7 @@ export function LeaderboardPopup({ onClose }: LeaderboardPopupProps) {
 
         if (!cancelled) {
           setEntries(data.entries ?? []);
+          setSeasonLabel(data.seasonLabel ?? null);
         }
       } catch (loadError) {
         if (!cancelled) {
@@ -118,12 +121,19 @@ export function LeaderboardPopup({ onClose }: LeaderboardPopupProps) {
         aria-labelledby="leaderboard-title"
       >
         <div className="flex items-center justify-between border-b-[3px] border-ink bg-ink px-4 py-3">
-          <span
-            id="leaderboard-title"
-            className="font-mono text-xs uppercase text-card-yellow"
-          >
-            KLASEMEN PREDIKSI
-          </span>
+          <div className="flex items-baseline gap-2">
+            <span
+              id="leaderboard-title"
+              className="font-mono text-xs uppercase text-card-yellow"
+            >
+              KLASEMEN PREDIKSI
+            </span>
+            {seasonLabel && (
+              <span className="font-mono text-xs text-card-yellow/70">
+                {seasonLabel}
+              </span>
+            )}
+          </div>
           <button
             type="button"
             onClick={onClose}

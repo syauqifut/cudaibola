@@ -4,10 +4,22 @@ import { db } from '@/lib/db/client';
 import { competitions, matches } from '@/lib/db/schema';
 import type { MatchWithCompetition } from '@/lib/shared/types';
 
-export async function findTodayMatches(
+export async function findMatchesForDate(
   startUtc: Date,
   endUtc: Date,
+  includeLive: boolean,
 ): Promise<MatchWithCompetition[]> {
+  const dateRange = and(
+    gte(matches.kickoffTime, startUtc),
+    lte(matches.kickoffTime, endUtc),
+  );
+
+  // Live-pinning hanya saat targetDate = hari ini. Saat navigasi ke tanggal lain,
+  // query murni rentang kickoff tanggal itu (tanpa OR status=live). Lihat SPEC.md 5b.
+  const whereClause = includeLive
+    ? or(dateRange, eq(matches.status, 'live'))
+    : dateRange;
+
   const rows = await db
     .select({
       id: matches.id,
@@ -32,12 +44,7 @@ export async function findTodayMatches(
     })
     .from(matches)
     .innerJoin(competitions, eq(matches.competitionId, competitions.id))
-    .where(
-      or(
-        and(gte(matches.kickoffTime, startUtc), lte(matches.kickoffTime, endUtc)),
-        eq(matches.status, 'live'),
-      ),
-    )
+    .where(whereClause)
     .orderBy(asc(competitions.priorityOrder), asc(matches.kickoffTime));
 
   return rows;

@@ -15,6 +15,7 @@ function sortMatchesWithinGroup(
 
 export function groupMatchesByCompetition(
   matchList: MatchWithCompetition[],
+  isToday: boolean,
 ): CompetitionMatchGroup[] {
   const byCompetition = new Map<string, MatchWithCompetition[]>();
 
@@ -43,8 +44,12 @@ export function groupMatchesByCompetition(
   }
 
   groups.sort((a, b) => {
-    if (a.hasLiveMatch && !b.hasLiveMatch) return -1;
-    if (!a.hasLiveMatch && b.hasLiveMatch) return 1;
+    // Live-pinning grup HANYA saat menampilkan hari ini (SPEC.md 5b / DESIGN.md).
+    // Saat navigasi ke tanggal lain, urutan grup murni berdasar priorityOrder.
+    if (isToday) {
+      if (a.hasLiveMatch && !b.hasLiveMatch) return -1;
+      if (!a.hasLiveMatch && b.hasLiveMatch) return 1;
+    }
     return a.priorityOrder - b.priorityOrder;
   });
 

@@ -70,6 +70,7 @@ async function upsertCompetitionWithClient(
       set: {
         name: sql`excluded.name`,
         logoUrl: sql`excluded.logo_url`,
+        priorityOrder: sql`excluded.priority_order`,
       },
     })
     .returning({ id: competitions.id });

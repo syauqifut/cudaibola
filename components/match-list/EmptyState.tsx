@@ -14,7 +14,7 @@ export function EmptyState({
   return (
     <div className="border-[3px] border-ink bg-surface px-6 py-10 text-center shadow-brutal">
       <p className="font-sans text-sm">
-        Belum ada data pertandingan untuk hari ini.
+        Tidak ada pertandingan di tanggal ini.
       </p>
 
       {error && (

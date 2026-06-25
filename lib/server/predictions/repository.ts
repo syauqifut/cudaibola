@@ -7,6 +7,7 @@ export type PredictionRecord = {
   id: string;
   userId: string;
   matchId: string;
+  seasonId: string;
   predictedHomeScore: number;
   predictedAwayScore: number;
   pointsEarned: number | null;
@@ -42,6 +43,7 @@ export async function upsertPrediction(
   input: {
     userId: string;
     matchId: string;
+    seasonId: string;
     predictedHomeScore: number;
     predictedAwayScore: number;
   },
@@ -53,12 +55,15 @@ export async function upsertPrediction(
     .values({
       userId: input.userId,
       matchId: input.matchId,
+      seasonId: input.seasonId,
       predictedHomeScore: input.predictedHomeScore,
       predictedAwayScore: input.predictedAwayScore,
       updatedAt: now,
     })
     .onConflictDoUpdate({
       target: [predictions.userId, predictions.matchId],
+      // CATATAN: seasonId sengaja TIDAK di-update di sini. Prediksi terkunci ke season
+      // tempat ia dibuat (SPEC.md 5a / DATABASE.md) — edit hanya mengubah skor, bukan season.
       set: {
         predictedHomeScore: sql`excluded.predicted_home_score`,
         predictedAwayScore: sql`excluded.predicted_away_score`,
@@ -69,6 +74,7 @@ export async function upsertPrediction(
       id: predictions.id,
       userId: predictions.userId,
       matchId: predictions.matchId,
+      seasonId: predictions.seasonId,
       predictedHomeScore: predictions.predictedHomeScore,
       predictedAwayScore: predictions.predictedAwayScore,
       pointsEarned: predictions.pointsEarned,
@@ -92,6 +98,7 @@ export async function findPredictionByUserAndMatch(
       id: predictions.id,
       userId: predictions.userId,
       matchId: predictions.matchId,
+      seasonId: predictions.seasonId,
       predictedHomeScore: predictions.predictedHomeScore,
       predictedAwayScore: predictions.predictedAwayScore,
       pointsEarned: predictions.pointsEarned,
