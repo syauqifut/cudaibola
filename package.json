@@ -12,6 +12,8 @@
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
+    "date-fns": "^4.4.0",
+    "date-fns-tz": "^3.2.0",
     "drizzle-orm": "^0.44.2",
     "next": "^15.3.4",
     "postgres": "^3.4.7",
