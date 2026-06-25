@@ -6,18 +6,21 @@ schema-nya begitu, supaya tidak diubah tanpa alasan yang sama kuat.
 ## Entity Relationship (ringkas)
 
 ```
-competitions ──┐
+seasons ───────┐
                │ 1-to-many
-matches ───────┤
-               │ 1-to-many
-predictions ───┘
-               │ many-to-1
-users ─────────┘
+competitions ──┼──┐
+               │  │ 1-to-many
+predictions ───┘  │
+   │ many-to-1     │
+   ▼               ▼
+ users          matches ── 1-to-many ──► predictions
 ```
 
 - `users` tidak punya relasi auth apa pun — lihat SPEC.md bagian 3.
+- `seasons` adalah metadata periode leaderboard (per-kuartal kalender) — lihat SPEC.md
+  bagian 5a. Setiap `prediction` terikat ke satu `season` (dikunci saat dibuat).
 - `competitions` adalah master data, diisi/diupdate saat sync, dipakai untuk grouping di
-  homepage dan urutan tampil (`priorityOrder`).
+  homepage dan urutan tampil (`priorityOrder`). Dibatasi ke 6 kompetisi (SPEC.md bagian 1a).
 - `matches` adalah cache lokal dari provider eksternal — kolom `providerMatchId` dan
   `lastSyncedAt` ada khusus untuk keperluan sinkronisasi, jangan dihapus.
 - `predictions` adalah satu-satunya tabel yang ditulis langsung oleh user (lewat form submit).
@@ -63,37 +66,76 @@ pertemanan/komunitas kecil, ini jauh lebih simpel daripada jaga konsistensi tabe
 Kalau nanti jumlah user/match sudah besar dan query ini mulai berat, baru pertimbangkan
 materialized view atau tabel cache — bukan keputusan sekarang.
 
+**Tabel `seasons` — metadata, bukan state yang "dijalankan"**
+Season ditentukan murni dari kalender (kuartal: Jan-Mar, Apr-Jun, Jul-Sep, Okt-Des), jadi
+tabel ini bukan sesuatu yang perlu di-trigger/dijalankan oleh cron untuk "melakukan reset".
+Fungsinya:
+- Referensi `id` yang stabil untuk di-FK-kan dari `predictions.seasonId` (lebih baik daripada
+  predictions menyimpan `quarterLabel` sebagai string mentah berulang-ulang).
+- `getCurrentSeason()` (di `lib/server/season/service.ts`) menghitung kuartal aktif dari
+  tanggal sekarang, lalu `upsert` baris season itu kalau belum ada (lazy-create, bukan
+  pre-populate semua season masa depan).
+- Leaderboard "musim sebelumnya" (arsip) tinggal query `predictions` yang `seasonId`-nya
+  bukan season aktif — tidak ada proses "archiving" yang memindahkan data, datanya memang
+  sudah otomatis terpisah karena FK ke season yang berbeda.
+
+**Kolom `predictions.seasonId` dikunci saat insert, tidak pernah diubah**
+Prediksi yang dibuat di season Q3 tetap milik Q3 selamanya, walau dihitung/diupdate poinnya
+belakangan (misal match selesai beberapa hari setelah season berakhir, kasus jarang tapi
+mungkin terjadi di akhir kuartal). Job scoring tidak boleh memindahkan prediksi ke season baru
+hanya karena saat dihitung sudah masuk kuartal berikutnya.
+
 ## Query pattern utama yang akan sering dipakai
 
-**Match list grouped by competition (untuk homepage)**
+**Match list grouped by competition (untuk homepage, dengan navigasi prev/next day)**
 
-PENTING: rentang "hari ini" HARUS dihitung berdasarkan `APP_TIMEZONE` (WIB), dikonversi ke UTC
-di kode aplikasi, baru dipakai sebagai parameter query — jangan pakai `kickoff_time::date =
-CURRENT_DATE` di SQL mentah, karena itu memakai timezone server database (biasanya UTC), bukan
-WIB, dan akan salah menjelang tengah malam. Lihat `.cursor/rules/20-domain-rules.mdc` bagian
-Timezone untuk detail penghitungan rentangnya.
+Query ini menerima parameter `$targetDate` (bukan selalu "hari ini") supaya bisa dipakai untuk
+navigasi prev/next day (SPEC.md bagian 5b). Rentang hari HARUS dihitung berdasarkan
+`APP_TIMEZONE` (WIB), dikonversi ke UTC di kode aplikasi — jangan pakai `kickoff_time::date =
+$targetDate` di SQL mentah, karena itu memakai timezone server database (biasanya UTC), bukan
+WIB. Lihat `.cursor/rules/20-domain-rules.mdc` bagian Timezone untuk detail penghitungan
+rentangnya.
 
 ```sql
 SELECT m.*, c.name as competition_name, c.priority_order
 FROM matches m
 JOIN competitions c ON m.competition_id = c.id
-WHERE (m.kickoff_time >= $startOfTodayUtc AND m.kickoff_time <= $endOfTodayUtc)
-   OR m.status = 'live'  -- match live tetap tampil walau kickoff-nya "kemarin" (lewat tengah malam)
+WHERE (m.kickoff_time >= $startOfTargetDateUtc AND m.kickoff_time <= $endOfTargetDateUtc)
+   OR (m.status = 'live' AND $targetDate = $today)  -- live-pinning HANYA berlaku saat
+                                                       -- $targetDate adalah hari ini, bukan
+                                                       -- saat user sedang navigasi ke tanggal
+                                                       -- lain (lihat SPEC.md bagian 5b)
 ORDER BY c.priority_order ASC, m.kickoff_time ASC;
 ```
-`$startOfTodayUtc` dan `$endOfTodayUtc` dihitung di kode (Drizzle query builder), bukan
-literal SQL — nilainya hasil konversi awal/akhir hari WIB ke UTC.
+`$startOfTargetDateUtc` dan `$endOfTargetDateUtc` dihitung di kode (Drizzle query builder) dari
+`$targetDate` yang dikirim client (default: hari ini di `APP_TIMEZONE` saat halaman dibuka
+pertama kali) — bukan literal SQL.
 Lalu di-`groupBy(competitionId)` di kode (lihat `lib/server/matches/grouping.ts`), karena
-grouping + sorting status (live dulu) lebih mudah dikontrol di JS daripada SQL kompleks.
+grouping + sorting status (live dulu, hanya saat targetDate = hari ini) lebih mudah dikontrol
+di JS daripada SQL kompleks.
 
-**Leaderboard**
+**Leaderboard (di-scope ke season aktif, lihat SPEC.md bagian 5a)**
+
 ```sql
 SELECT u.nickname, COALESCE(SUM(p.points_earned), 0) as total_points
 FROM users u
-LEFT JOIN predictions p ON p.user_id = u.id
+LEFT JOIN predictions p ON p.user_id = u.id AND p.season_id = $currentSeasonId
 GROUP BY u.id, u.nickname
 ORDER BY total_points DESC;
 ```
+`$currentSeasonId` didapat dari `getCurrentSeason()` (lihat `lib/server/season/service.ts`),
+dihitung dari tanggal sekarang, bukan disimpan sebagai konfigurasi statis.
+
+**Leaderboard arsip (season sebelumnya, untuk dilihat sebagai "klasemen final")**
+```sql
+SELECT u.nickname, COALESCE(SUM(p.points_earned), 0) as total_points
+FROM users u
+LEFT JOIN predictions p ON p.user_id = u.id AND p.season_id = $archivedSeasonId
+GROUP BY u.id, u.nickname
+ORDER BY total_points DESC;
+```
+Query-nya identik, cuma `$seasonId` yang beda — tidak ada tabel/proses arsip terpisah, lihat
+penjelasan di bagian "Tabel `seasons`" di atas.
 
 **Cek apakah user sudah submit prediksi untuk match tertentu (sebelum render form)**
 ```sql

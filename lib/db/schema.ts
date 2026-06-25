@@ -19,6 +19,25 @@ export const users = pgTable('users', {
 });
 
 // ============================================================
+// SEASONS
+// Leaderboard di-scope per season (per-kuartal kalender, lihat SPEC.md bagian 5a).
+// Tabel ini cuma metadata referensi — tanggal mulai/akhir dihitung dari kalender,
+// bukan disimpan sebagai state yang "dijalankan" oleh cron.
+// ============================================================
+
+export const seasons = pgTable('seasons', {
+  id: uuid('id').primaryKey().defaultRandom(),
+
+  // Label tampil, contoh: "2026 Q3" (dihasilkan dari startDate, bukan diinput manual)
+  label: varchar('label', { length: 20 }).notNull().unique(),
+
+  startDate: timestamp('start_date').notNull(),   // selalu awal kuartal, 00:00 APP_TIMEZONE
+  endDate: timestamp('end_date').notNull(),        // selalu akhir kuartal, 23:59 APP_TIMEZONE
+
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// ============================================================
 // COMPETITIONS
 // Master data kompetisi, dipakai untuk grouping & urutan tampil di homepage
 // ============================================================
@@ -88,6 +107,10 @@ export const predictions = pgTable('predictions', {
 
   userId: uuid('user_id').notNull().references(() => users.id),
   matchId: uuid('match_id').notNull().references(() => matches.id),
+
+  // Season tempat prediksi ini dibuat — dikunci saat insert, TIDAK BOLEH dihitung ulang
+  // setelah season berganti. Lihat SPEC.md bagian 5a: prediksi lama tidak dipindah/recalculate.
+  seasonId: uuid('season_id').notNull().references(() => seasons.id),
 
   predictedHomeScore: integer('predicted_home_score').notNull(),
   predictedAwayScore: integer('predicted_away_score').notNull(),

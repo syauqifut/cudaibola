@@ -80,6 +80,27 @@ HARUS mengkonversi dari UTC ke `APP_TIMEZONE` sebelum ditampilkan, format 24 jam
 contoh "15:00"), bukan format AM/PM. Lakukan konversi ini sekali di satu util terpusat
 (`lib/shared/format-time.ts`), jangan format tanggal manual berulang-ulang di tiap komponen.
 
+# Season (lib/server/season/)
+
+Lihat SPEC.md bagian 5a untuk aturan bisnisnya. Bagian ini soal implementasi.
+
+- Season dihitung dari kuartal kalender (Jan-Mar, Apr-Jun, Jul-Sep, Okt-Des) di `APP_TIMEZONE`
+  yang sama dengan dipakai untuk "match hari ini" — satu fungsi `getQuarterBounds(date)` yang
+  dipakai bersama, jangan duplikat logic kuartal di tempat lain.
+- `getCurrentSeason()` di `lib/server/season/service.ts`:
+  1. Hitung kuartal aktif dari `new Date()` (lewat `getQuarterBounds`).
+  2. Cek apakah baris `seasons` dengan rentang itu sudah ada (match by `startDate`).
+  3. Kalau belum ada, `INSERT` baris baru (lazy-create) — jangan pre-populate semua season
+     masa depan saat migration.
+  4. Return baris season itu (dipakai untuk `seasonId` saat insert prediksi baru).
+- Dipanggil dari `predictions/service.ts` setiap kali `submitPrediction()` dieksekusi, untuk
+  menentukan `seasonId` yang dikunci ke prediksi baru itu (lihat aturan: `seasonId` tidak
+  pernah diubah setelah prediksi dibuat, lihat DATABASE.md).
+- Leaderboard default (popup leaderboard) memanggil `getCurrentSeason()` untuk tahu season mana
+  yang ditampilkan. Kalau UI nanti butuh lihat arsip season lalu, query `seasons` table untuk
+  daftar season yang sudah lewat (`endDate < now()`), tampilkan sebagai daftar yang bisa dipilih
+  — tapi ini boleh menyusul, tidak wajib di MVP pertama (cukup tampilkan season aktif dulu).
+
 # Identity (lib/server/identity/)
 
 Ini BUKAN sistem auth. Tidak ada password, tidak ada session server-side yang aman.
@@ -138,6 +159,81 @@ dicek dari dokumentasi resmi — jangan menebak struktur response, ikuti ini per
 - Baca header response `x-ratelimit-requests-remaining` setiap kali request berhasil dan log
   kalau nilainya sudah rendah (< 10) — ini sinyal untuk memperlambat frekuensi sync, bukan
   retry lebih agresif.
+
+## Daftar liga — scope tertutup ke 6 kompetisi (SPEC.md bagian 1/1a)
+
+Sync **hanya** boleh mengambil data untuk 6 kompetisi ini:
+1. FIFA World Cup 2026
+2. Premier League (Inggris)
+3. La Liga (Spanyol)
+4. Bundesliga (Jerman)
+5. Serie A (Italia)
+6. Ligue 1 (Prancis)
+
+**PENTING — nama liga ini TIDAK unik secara global, WAJIB disambiguasi dengan `countryCode`.**
+Ada banyak negara yang punya liga bernama mirip atau identik (Rusia, Ukraina, India, dan
+negara-negara lain juga punya liga bernama "Premier League"; "Liga 1" dipakai beberapa negara
+dengan ejaan beda). Lookup berdasarkan `name` saja BISA mengembalikan liga yang salah negara
+tanpa error apa pun — sync akan diam-diam jalan dengan liga yang salah sampai ketahuan ada tim
+asing yang gak masuk akal muncul di match list.
+
+Endpoint pencarian liga (`GET /leagues`) mendukung parameter `countryCode` dan `countryName`
+selain `name` — **WAJIB pakai kombinasi `name` + `countryCode`** saat lookup, bukan `name` saja:
+
+| Kompetisi | `name` untuk lookup | `countryCode` |
+|---|---|---|
+| FIFA World Cup 2026 | "World Cup" | (tidak perlu, ini turnamen internasional) |
+| Premier League | "Premier League" | `GB-ENG` (Inggris — bukan `RU`, `UA`, dst) |
+| La Liga | "La Liga" | `ES` |
+| Bundesliga | "Bundesliga" | `DE` |
+| Serie A | "Serie A" | `IT` (bukan `BR` — Brasil juga punya "Serie A") |
+| Ligue 1 | "Ligue 1" | `FR` |
+
+**Referensi terverifikasi (boleh dipakai langsung, sudah dicek dari sumber resmi Highlightly):**
+- World Cup 2026 → `leagueId: 1635`
+- Premier League (Inggris) → `leagueId: 33973`, `countryCode: GB-ENG`
+
+ID untuk La Liga, Bundesliga, Serie A, Ligue 1 **belum terverifikasi** — JANGAN ditebak/diisi
+angka sembarang. Wajib dikonfirmasi via lookup sendiri sebelum dipakai:
+
+1. Buat script setup satu kali (`scripts/lookup-league-ids.ts`, tidak perlu masuk ke
+   `lib/server/`, ini cuma dijalankan manual sekali saat setup) yang memanggil
+   `GET /leagues?name={nama}&countryCode={kode}` untuk tiap baris di tabel di atas yang belum
+   ada ID terverifikasinya.
+2. **Cek manual hasil response-nya** — pastikan `country.code` dan `name` di response benar
+   cocok dengan yang dimaksud (misal pastikan Serie A yang didapat itu Italia, bukan Brasil)
+   sebelum disimpan sebagai konstanta. Jangan otomatis ambil item pertama dari hasil tanpa
+   verifikasi ini.
+3. Simpan hasil yang sudah diverifikasi sebagai konstanta eksplisit di `lib/shared/constants.ts`:
+
+```ts
+// ID yang sudah TERVERIFIKASI dari lookup manual /leagues?name=...&countryCode=...
+// JANGAN diisi angka tebakan — lihat .cursor/rules/20-domain-rules.mdc bagian "Daftar liga"
+export const TRACKED_LEAGUES = [
+  { providerLeagueId: '1635', name: 'FIFA World Cup 2026', countryCode: null },
+  { providerLeagueId: '33973', name: 'Premier League', countryCode: 'GB-ENG' },
+  { providerLeagueId: 'BELUM_DIVERIFIKASI', name: 'La Liga', countryCode: 'ES' },
+  { providerLeagueId: 'BELUM_DIVERIFIKASI', name: 'Bundesliga', countryCode: 'DE' },
+  { providerLeagueId: 'BELUM_DIVERIFIKASI', name: 'Serie A', countryCode: 'IT' },
+  { providerLeagueId: 'BELUM_DIVERIFIKASI', name: 'Ligue 1', countryCode: 'FR' },
+] as const;
+```
+
+4. `sync/service.ts` melakukan fetch `/matches` **per liga** dari `TRACKED_LEAGUES` (looping,
+   pakai `leagueId` sebagai primary query param yang diwajibkan endpoint), bukan satu fetch
+   tanpa filter lalu disaring belakangan — supaya tidak membuang quota request untuk liga yang
+   tidak relevan.
+5. Cek dulu apakah endpoint `/matches` mendukung filter banyak `leagueId` dalam satu request
+   (lihat dokumentasi resmi saat implementasi) — kalau bisa, lebih hemat quota daripada 6
+   request terpisah per sync cycle.
+6. Setelah `competitions` di-upsert dari hasil sync, sebagai sanity check tambahan, bandingkan
+   `competitions.name` yang tersimpan dengan daftar di tabel atas — kalau ada mismatch (misal
+   nama yang ke-resolve adalah "Serie A" tapi tim-timnya semua nama Brasil), log warning keras,
+   jangan lanjutkan sync untuk liga itu sampai `leagueId`-nya diperbaiki.
+
+Kalau di masa depan provider mengganti/menghapus salah satu `leagueId` (jarang tapi mungkin),
+sync untuk liga itu akan mengembalikan hasil kosong/error — tangani sebagai warning per-liga
+(skip liga itu di cycle ini, lanjutkan liga lain), bukan menggagalkan seluruh sync.
 
 ## Endpoint yang dipakai untuk MVP
 
@@ -241,11 +337,15 @@ berdasarkan skor waktu normal, bukan hasil penalti.
 
 ## Frekuensi cron sync (acuan dari refresh interval resmi provider)
 
-- Sync `/matches` (list + status + skor): jalankan **setiap 1 menit** saat ada match yang
-  sedang berlangsung hari itu, atau **setiap 15-30 menit** kalau tidak ada match live (hemat
-  quota saat sepi).
+- Sync `/matches` (list + status + skor) dilakukan **per liga dari `TRACKED_LEAGUES`** (6 liga,
+  lihat bagian "Daftar liga" di atas) — bukan satu request tanpa filter.
+- Jalankan **setiap 1 menit** saat ada match yang sedang berlangsung hari itu (di salah satu
+  dari 6 liga), atau **setiap 15-30 menit** kalau tidak ada match live (hemat quota saat sepi).
 - Sync `/events/{matchId}` untuk match live: **setiap 1 menit**, hanya untuk match yang
   `status: live`.
-- Free tier Highlightly: 100 request/hari. Dengan banyak match berjalan bersamaan (musim World
-  Cup bisa ada beberapa match live sekaligus), hitung budget request sebelum menambah frekuensi
-  polling — jangan asumsikan quota selalu cukup tanpa dihitung dulu.
+- Free tier Highlightly: 100 request/hari. Karena sync per liga berarti hingga 6 request per
+  cycle (lebih kalau ditambah events per match live), hitung budget request sebelum menambah
+  frekuensi polling — jangan asumsikan quota selalu cukup tanpa dihitung dulu. Contoh kasar:
+  6 liga × 1 request/menit × 60 menit = 360 request/jam kalau dipaksa tiap menit terus-menerus
+  — jauh di atas budget harian, jadi interval "setiap 1 menit" HANYA berlaku saat benar-benar
+  ada match live, bukan default sepanjang hari.

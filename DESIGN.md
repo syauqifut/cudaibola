@@ -72,31 +72,46 @@ informasi tambahan masuk ke salah satu dari 3 permukaan ini atau tidak dibuat sa
 
 ### 1. Halaman utama — match list
 - Single page, scrollable.
+- **Navigation bar tanggal** di bagian paling atas (sebelum grup kompetisi pertama): tombol "←"
+  dan "→" (font-mono, sama styling dengan tombol sekunder) mengapit label tanggal yang sedang
+  ditampilkan (font-sans, contoh: "Hari ini, 25 Jun" / "26 Jun"). Default saat halaman dibuka:
+  hari ini. Lihat SPEC.md bagian 5b untuk aturan navigasinya.
 - Match dikelompokkan per kompetisi. Tiap grup punya header: badge nama kompetisi (background
   `ink`, teks `pitch-green`, font-mono) + label round di sebelahnya (font-sans, lebih kecil).
 - Urutan grup: kompetisi dengan match live duluan tampil paling atas (lihat
-  `lib/server/matches/grouping.ts`), lalu sisanya berdasar `priorityOrder` dari tabel
-  `competitions`.
+  `lib/server/matches/grouping.ts`) — **HANYA berlaku saat tanggal yang ditampilkan adalah hari
+  ini**; saat user navigasi ke tanggal lain via prev/next, urutan grup murni berdasar
+  `priorityOrder` dari tabel `competitions` tanpa live-pinning (karena match di tanggal lain
+  tidak mungkin live saat ini).
 - Dalam satu grup, tiap match adalah baris di dalam satu kartu kompetisi (bukan kartu
   per-match terpisah) — lihat mockup match list, semua match satu kompetisi berbagi satu
   border kartu, dipisah garis horizontal `border-bottom: 3px solid ink` antar baris.
 - Tiap baris match adalah area yang bisa diklik (membuka popup detail match), dengan badge di
   ujung kanan yang menunjukkan state: `TEBAK` (hijau, belum kickoff), `TERKUNCI` (kuning, live
   tapi belum ada hasil poin), `+N POIN` (ink bg + teks kuning, sudah selesai & sudah dihitung).
+- Kalau tanggal yang dipilih tidak punya match sama sekali (cek SPEC.md & rules edge case soal
+  empty state), tampilkan pesan "Tidak ada pertandingan di tanggal ini" alih-alih halaman
+  kosong — tetap tampilkan nav bar tanggal supaya user bisa lanjut geser ke tanggal lain.
 - Tombol/akses ke leaderboard ditaruh di bagian atas halaman ini (misal floating button atau
   item di header), karena leaderboard adalah popup, bukan halaman.
 
 ### 2. Popup leaderboard
 - Dibuka dari halaman utama, menutupi halaman dengan overlay gelap di belakangnya.
-- Header popup: badge "KLASEMEN PREDIKSI" (background `ink`, teks `card-yellow`).
+- Header popup: badge "KLASEMEN PREDIKSI" (background `ink`, teks `card-yellow`) **+ label
+  season aktif** di sebelahnya (font-mono, kecil, contoh: "2026 Q3") — supaya jelas ini bukan
+  akumulasi all-time. Lihat SPEC.md bagian 5a.
 - List ranking, satu baris per user: nomor urut (font-mono) + nickname (font-sans) + total
-  poin (font-mono, paling besar).
+  poin (font-mono, paling besar) — total poin ini SELALU dalam scope season aktif yang
+  ditampilkan di header, bukan akumulasi sepanjang waktu.
 - Peringkat 1 di-highlight background `card-yellow`.
 - Baris milik user yang sedang membuka app (cocokkan `userId` dari localStorage) di-highlight
   background `pitch-green`, disertai label "(kamu)" di belakang nickname — supaya gampang
   ditemukan tanpa scroll, terlepas dari posisi rankingnya.
 - Baris di luar 3 besar boleh sedikit di-fade (opacity ~0.6-0.7) untuk menjaga fokus visual ke
   top performer, KECUALI baris milik user sendiri yang tetap full opacity meski rank-nya rendah.
+- Arsip season sebelumnya BOLEH menyusul di iterasi berikutnya (misal dropdown pilih season di
+  header popup) — tidak wajib di MVP pertama, cukup tampilkan season aktif dulu (lihat
+  `.cursor/rules/20-domain-rules.mdc` bagian Season).
 
 ### 3. Popup detail match
 Dua state berbeda, tergantung `status` match (lihat schema.ts):
