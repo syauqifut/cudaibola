@@ -115,7 +115,7 @@ export function PredictionForm({
           value={homeScore}
           onChange={(event) => setHomeScore(event.target.value)}
           aria-label="Skor tim tuan rumah"
-          className="h-[42px] w-[46px] border-[3px] border-ink bg-surface text-center font-mono text-lg outline-none"
+          className="score-input-brutal h-[42px] w-[46px] border-[3px] border-ink bg-surface text-center font-mono text-lg"
         />
         <span className="font-mono text-lg text-ink/40">-</span>
         <input
@@ -127,7 +127,7 @@ export function PredictionForm({
           value={awayScore}
           onChange={(event) => setAwayScore(event.target.value)}
           aria-label="Skor tim tamu"
-          className="h-[42px] w-[46px] border-[3px] border-ink bg-surface text-center font-mono text-lg outline-none"
+          className="score-input-brutal h-[42px] w-[46px] border-[3px] border-ink bg-surface text-center font-mono text-lg"
         />
       </div>
 
@@ -138,7 +138,7 @@ export function PredictionForm({
       <button
         type="submit"
         disabled={isSubmitting}
-        className="mt-5 w-full border-[3px] border-ink bg-pitch-green py-3 font-mono text-sm shadow-brutal-sm disabled:opacity-50"
+        className="btn-brutal mt-5 w-full border-[3px] border-ink bg-pitch-green py-3 font-mono text-sm disabled:opacity-50"
       >
         {isSubmitting ? 'MENYIMPAN...' : 'SUBMIT TEBAKAN'}
       </button>

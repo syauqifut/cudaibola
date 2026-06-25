@@ -27,7 +27,7 @@ export function PageHeader() {
         <button
           type="button"
           onClick={() => setShowLeaderboard(true)}
-          className="shrink-0 border-[3px] border-ink bg-surface px-4 py-2 font-mono text-xs shadow-brutal-sm"
+          className="btn-brutal shrink-0 border-[3px] border-ink bg-surface px-4 py-2 font-mono text-xs"
         >
           KLASEMEN
         </button>

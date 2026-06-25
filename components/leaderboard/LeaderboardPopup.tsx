@@ -109,7 +109,7 @@ export function LeaderboardPopup({ onClose }: LeaderboardPopupProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-ink/60 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-ink/50 p-4 sm:items-center"
       onClick={onClose}
       role="presentation"
     >
@@ -137,7 +137,7 @@ export function LeaderboardPopup({ onClose }: LeaderboardPopupProps) {
           <button
             type="button"
             onClick={onClose}
-            className="border-2 border-card-yellow px-2 py-1 font-mono text-xs text-card-yellow"
+            className="btn-brutal border-2 border-card-yellow px-2 py-1 font-mono text-xs text-card-yellow"
             aria-label="Tutup"
           >
             X

@@ -139,6 +139,93 @@ Dua state berbeda, tergantung `status` match (lihat schema.ts):
 - Form input tidak muncul sama sekali di state ini — read-only total, tidak ada tombol submit
   yang di-disable (lebih baik disembunyikan daripada ditampilkan abu-abu).
 
+## Interaksi & animasi (hover, active, focus)
+
+Token sebelumnya (warna, border, shadow) cuma mendefinisikan **state diam**. Bagian ini
+mengunci **state interaksi** — ini bagian yang paling sering dilupakan dan paling penting untuk
+neo-brutalism, karena di sinilah karakter "brutal" benar-benar kerasa.
+
+**Prinsip dasar: animasi brutalism itu KASAR/FISIK, bukan halus.** Salah kalau dieksekusi
+seperti animasi UI modern biasa (fade lembut, ease-in-out panjang, scale subtle). Yang benar:
+pergerakan singkat yang mensimulasikan benda fisik tebal (kertas/papan) yang ditekan atau
+diangkat — durasi pendek, tanpa easing kompleks.
+
+**Durasi & easing — dikunci, jangan diubah:**
+```css
+transition: transform 0.1s ease, box-shadow 0.1s ease;
+```
+0.1s adalah maksimum. JANGAN pakai durasi seperti 0.2s/0.3s yang umum dipakai di UI modern —
+itu akan kerasa "lembek", bertentangan dengan karakter brutal yang dituju.
+
+### Tombol (primer & sekunder)
+
+- **Default**: shadow `4px 4px 0 ink`, posisi normal (`translate(0, 0)`).
+- **Hover**: shadow membesar jadi `6px 6px 0 ink`, tombol bergerak `translate(-2px, -2px)` —
+  efeknya tombol "terangkat", shadow makin kelihatan jelas di belakangnya.
+- **Active/pressed (saat diklik, `:active` atau `onmousedown`)**: shadow LANGSUNG hilang total
+  (`0 0 0 ink`, alias tidak ada shadow), tombol bergerak `translate(4px, 4px)` — efeknya tombol
+  "nempel rata" ke posisi shadow, mensimulasikan ditekan sampai habis. Ini transisi paling
+  penting untuk dirasakan "brutal" — jangan dilewatkan demi kesederhanaan kode.
+- Tidak ada efek opacity/fade di mana pun pada tombol. Tidak ada scale (`transform: scale(...)`)
+  — pergerakannya selalu translate (geser), bukan membesar/mengecil.
+
+```css
+/* Pola dasar tombol, terapkan di semua varian (primer/sekunder) */
+.btn-brutal {
+  box-shadow: 4px 4px 0 var(--ink);
+  transform: translate(0, 0);
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+.btn-brutal:hover {
+  box-shadow: 6px 6px 0 var(--ink);
+  transform: translate(-2px, -2px);
+}
+.btn-brutal:active {
+  box-shadow: 0 0 0 var(--ink);
+  transform: translate(4px, 4px);
+}
+```
+
+### Baris match (di dalam kartu kompetisi, match list)
+
+- **Default**: background transparan/`surface`.
+- **Hover**: background langsung berganti SOLID ke `pitch-green` (TIDAK di-fade, harus instan
+  atau maksimum transisi warna 0.1s) — ini menandakan baris itu bisa diklik untuk buka popup
+  detail. Tambahkan juga `transform: translateX(3px)` supaya kerasa "nyangkut"/grippy, bukan
+  hover pasif biasa.
+- JANGAN pakai efek hover yang umum dipakai di list modern (subtle background-secondary,
+  opacity sedikit turun, dst) — kontras warna penuh adalah bagian dari bahasa visual ini.
+
+### Input skor (form prediksi)
+
+- **Default**: border 3px `ink`, tidak ada shadow.
+- **Focus**: munculkan shadow `3px 3px 0 card-yellow` secara instan (transisi box-shadow 0.1s).
+  Sengaja pakai kuning (bukan warna focus ring biru standar browser) — konsisten dengan makna
+  warna kuning sebagai "perhatian/aktif" di seluruh DESIGN.md.
+- Set `outline: none` di base style (karena sudah diganti dengan shadow kuning di atas), tapi
+  pastikan shadow focus ini tetap muncul jelas untuk keperluan aksesibilitas — jangan
+  dihilangkan sama sekali tanpa pengganti.
+
+### Badge & elemen statis lain (TIDAK butuh interaksi)
+
+Badge (`TEBAK`, `TERKUNCI`, `+N POIN`) TIDAK diberi hover/active state — badge ini murni
+informatif, bukan elemen yang bisa diklik sendiri (klik terjadi di level baris match, bukan di
+badge-nya). Jangan tambahkan transition/hover effect ke badge demi "konsistensi" — itu cuma
+menambah noise visual tanpa fungsi.
+
+### Implementasi di Tailwind
+
+Karena transisi ini dipakai berulang di banyak komponen (tombol primer, sekunder, baris match),
+definisikan sebagai utility class custom di `tailwind.config.ts` atau `globals.css`, jangan
+tulis inline style berulang di tiap komponen:
+
+```css
+/* globals.css */
+.interactive-brutal {
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+```
+
 ## Komponen kecil — aturan konsisten
 
 - **Badge** selalu: font-mono, font-size 10-11px, padding `2-4px 8-10px`, border 2px solid
@@ -195,3 +282,9 @@ Lalu pakai class `shadow-brutal` / `shadow-brutal-sm` di komponen, bukan menulis
   (lihat SPEC.md).
 - JANGAN memakai warna merah (`card-red`) untuk merepresentasikan hasil prediksi salah/poin
   rendah. Skema poin tidak punya nilai minus; merah hanya untuk error teknis aplikasi.
+- JANGAN memakai transisi/animasi halus bergaya UI modern (durasi 0.2s+, ease-in-out panjang,
+  fade, scale) di elemen interaktif mana pun. Semua transisi dikunci di 0.1s, lihat bagian
+  "Interaksi & animasi" — termasuk saat "kelihatan lebih smooth kalau durasinya ditambah".
+- JANGAN biarkan tombol/elemen interaktif tanpa state hover dan active. Setiap tombol baru yang
+  dibuat WAJIB punya ketiga state (default, hover, active) sesuai pola di bagian "Interaksi &
+  animasi" — ini bukan elemen opsional/polish, ini bagian dari definisi komponen.

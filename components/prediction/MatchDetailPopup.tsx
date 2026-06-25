@@ -88,7 +88,7 @@ export function MatchDetailPopup({ match, onClose }: MatchDetailPopupProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-ink/60 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-ink/50 p-4 sm:items-center"
       onClick={onClose}
       role="presentation"
     >
@@ -126,7 +126,7 @@ export function MatchDetailPopup({ match, onClose }: MatchDetailPopupProps) {
             <button
               type="button"
               onClick={onClose}
-              className={`border-2 border-ink px-2 py-1 font-mono text-xs ${
+              className={`btn-brutal border-2 border-ink px-2 py-1 font-mono text-xs ${
                 isScheduled
                   ? 'bg-surface text-ink'
                   : 'bg-ink text-pitch-white'

@@ -45,7 +45,7 @@ export function MatchRow({ match, isLast, pointsEarned, onSelect }: MatchRowProp
     <button
       type="button"
       onClick={() => onSelect?.(match.id)}
-      className={`flex w-full items-center gap-3 px-4 py-4 text-left transition-colors hover:bg-pitch-white/60 ${
+      className={`match-row-brutal flex w-full items-center gap-3 px-4 py-4 text-left ${
         isLast ? '' : 'border-b-[3px] border-ink'
       }`}
     >

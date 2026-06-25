@@ -14,7 +14,7 @@ export function DateNavBar({ label, onPrev, onNext, disabled = false }: DateNavB
         type="button"
         onClick={onPrev}
         disabled={disabled}
-        className="border-2 border-ink px-3 py-1 font-mono text-sm disabled:opacity-50"
+        className="btn-brutal border-2 border-ink bg-surface px-3 py-1 font-mono text-sm disabled:opacity-40"
         aria-label="Hari sebelumnya"
       >
         &larr;
@@ -28,7 +28,7 @@ export function DateNavBar({ label, onPrev, onNext, disabled = false }: DateNavB
         type="button"
         onClick={onNext}
         disabled={disabled}
-        className="border-2 border-ink px-3 py-1 font-mono text-sm disabled:opacity-50"
+        className="btn-brutal border-2 border-ink bg-surface px-3 py-1 font-mono text-sm disabled:opacity-40"
         aria-label="Hari berikutnya"
       >
         &rarr;

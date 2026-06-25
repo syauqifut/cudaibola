@@ -1,3 +1,66 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  /* Input skor prediksi (DESIGN.md): kotak angka murni, tanpa stepper bawaan browser. */
+  input[type='number'] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+
+  input[type='number']::-webkit-outer-spin-button,
+  input[type='number']::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+}
+
+@layer components {
+  /*
+   * Interaksi brutal (DESIGN.md bagian "Interaksi & animasi"). Didefinisikan sekali di sini
+   * supaya tidak diulang inline di tiap komponen. Semua transisi dikunci di 0.1s ease.
+   */
+
+  /* Tombol primer & sekunder: default terangkat 4px, hover makin terangkat, active nempel rata. */
+  .btn-brutal {
+    box-shadow: 4px 4px 0 theme('colors.ink');
+    transform: translate(0, 0);
+    transition: transform 0.1s ease, box-shadow 0.1s ease;
+  }
+
+  .btn-brutal:not(:disabled):hover {
+    box-shadow: 6px 6px 0 theme('colors.ink');
+    transform: translate(-2px, -2px);
+  }
+
+  .btn-brutal:not(:disabled):active {
+    box-shadow: 0 0 0 theme('colors.ink');
+    transform: translate(4px, 4px);
+  }
+
+  .btn-brutal:disabled {
+    box-shadow: none;
+    transform: translate(0, 0);
+  }
+
+  /* Baris match yang bisa diklik: hover ganti solid ke pitch-green + geser kanan, instan. */
+  .match-row-brutal {
+    transition: transform 0.1s ease, background-color 0.1s ease;
+  }
+
+  .match-row-brutal:hover {
+    background-color: theme('colors.pitch-green');
+    transform: translateX(3px);
+  }
+
+  /* Input skor: focus munculkan shadow kuning (ganti outline ring biru bawaan browser). */
+  .score-input-brutal {
+    outline: none;
+    transition: box-shadow 0.1s ease;
+  }
+
+  .score-input-brutal:focus {
+    box-shadow: 3px 3px 0 theme('colors.card-yellow');
+  }
+}
