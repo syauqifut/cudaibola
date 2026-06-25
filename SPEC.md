@@ -156,8 +156,14 @@ Homepage tidak lagi terbatas menampilkan "hari ini" saja — ada navigasi tangga
 
 ## 8. Stack (lihat juga .cursor/rules/ untuk detail teknis)
 
-Next.js (App Router) monorepo, PostgreSQL (Neon/Supabase free tier), Drizzle ORM, Tailwind CSS.
-Backend logic terpisah rapi di `lib/server/`, tidak boleh bercampur dengan komponen React.
+Next.js (App Router) monorepo, PostgreSQL, Drizzle ORM, Tailwind CSS. Backend logic terpisah
+rapi di `lib/server/`, tidak boleh bercampur dengan komponen React.
+
+Deploy target: **VPS milik sendiri** (bukan Vercel/serverless). Next.js dijalankan via
+`next start` di balik PM2. Sync job berjalan sebagai **proses worker terpisah** (`node-cron`)
+di proses yang sama dengan codebase, bukan lewat HTTP cron eksternal — lihat
+`.cursor/rules/20-domain-rules.mdc` bagian "Mekanisme trigger sync" untuk detail dan aturan
+wajib "hanya satu instance worker boleh berjalan".
 
 ## 9. Definition of done untuk MVP
 

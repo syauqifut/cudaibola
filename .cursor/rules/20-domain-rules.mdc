@@ -235,6 +235,70 @@ Kalau di masa depan provider mengganti/menghapus salah satu `leagueId` (jarang t
 sync untuk liga itu akan mengembalikan hasil kosong/error — tangani sebagai warning per-liga
 (skip liga itu di cycle ini, lanjutkan liga lain), bukan menggagalkan seluruh sync.
 
+## Mekanisme trigger sync — proses worker terpisah (VPS, bukan serverless)
+
+Deploy target adalah VPS sendiri dengan proses long-running (`next start` di balik PM2 atau
+process manager setara) — BUKAN Vercel/serverless. Ini mengubah cara sync di-trigger dibanding
+pola umum "Vercel Cron yang hit HTTP endpoint":
+
+- Sync job dijalankan oleh **proses worker terpisah dari proses web server**, menggunakan
+  `node-cron` (atau `node-schedule`), bukan lewat endpoint HTTP yang di-hit dari layanan
+  eksternal.
+- Worker ini import langsung dari `lib/server/sync/service.ts` — TIDAK melakukan HTTP request
+  ke `/api/cron/...` milik aplikasinya sendiri. Endpoint `/api/cron/sync-matches` di
+  `app/api/` TETAP ada untuk keperluan trigger manual/debugging (misal dipanggil manual lewat
+  curl saat development), tapi bukan mekanisme utama di production.
+- Entry point worker: `worker/index.ts` (folder baru di root, sejajar dengan `app/` dan `lib/`)
+  — file ini yang didaftarkan sebagai proses terpisah di PM2, bukan bagian dari proses Next.js.
+
+```ts
+// worker/index.ts
+import cron from 'node-cron';
+import { syncMatchesFromProvider } from '@/lib/server/sync/service';
+import { hasLiveMatchToday } from '@/lib/server/matches/service';
+
+// Jalan tiap menit, tapi di dalam syncMatchesFromProvider sendiri ada logic untuk skip
+// kalau tidak ada match live (hemat quota) — lihat bagian "Frekuensi cron sync" di bawah.
+cron.schedule('* * * * *', async () => {
+  const shouldRunFrequently = await hasLiveMatchToday();
+  // syncMatchesFromProvider sendiri yang menentukan apakah benar-benar fetch ke Highlightly
+  // atau skip, berdasarkan kondisi ini -- lihat lock & frequency logic di sync/service.ts.
+  await syncMatchesFromProvider({ frequent: shouldRunFrequently });
+});
+```
+
+**WAJIB: hanya SATU instance worker yang boleh berjalan, terlepas dari berapa banyak instance
+web server.** Kalau PM2 dikonfigurasi cluster mode untuk web app (banyak instance untuk
+load balancing), worker process HARUS didaftarkan terpisah dengan `instances: 1` secara
+eksplisit di `ecosystem.config.js` (konfigurasi PM2) — JANGAN menjadikan worker bagian dari
+proses yang sama dengan web app yang di-cluster, karena itu akan menggandakan sync job sesuai
+jumlah instance (N instance = N sync job berjalan bersamaan, race condition walau sudah ada
+advisory lock di level DB — lock-nya jadi pertahanan kedua, bukan alasan untuk abai di
+level proses).
+
+Contoh `ecosystem.config.js` (PM2) untuk dua proses terpisah:
+
+```js
+module.exports = {
+  apps: [
+    {
+      name: 'web',
+      script: 'npm',
+      args: 'start',
+      instances: 'max',      // boleh cluster, banyak instance
+      exec_mode: 'cluster',
+    },
+    {
+      name: 'sync-worker',
+      script: 'worker/index.ts',
+      interpreter: 'tsx',     // atau hasil build jadi .js, sesuaikan setup build
+      instances: 1,           // WAJIB 1 — jangan cluster proses ini
+      exec_mode: 'fork',
+    },
+  ],
+};
+```
+
 ## Endpoint yang dipakai untuk MVP
 
 | Kebutuhan | Endpoint | Catatan |

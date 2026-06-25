@@ -15,7 +15,13 @@ jangan langsung override.
 - PostgreSQL via Drizzle ORM (BUKAN Prisma)
 - Tailwind CSS untuk styling
 - Tidak ada NextAuth/Auth.js — identitas user hanya via localStorage, lihat SPEC.md bagian 3
-- Deploy target: Vercel (free tier) + Neon/Supabase Postgres (free tier)
+- Deploy target: **VPS milik sendiri** (bukan Vercel) + PostgreSQL (bisa di VPS yang sama atau
+  Neon/Supabase). Next.js dijalankan dengan `next start` di balik process manager (PM2 atau
+  setara), bukan sebagai serverless function.
+- Karena proses long-running (bukan serverless), sync job dijalankan sebagai **proses worker
+  terpisah** dengan `node-cron`/`node-schedule` di dalam codebase yang sama — bukan lewat HTTP
+  cron endpoint yang di-hit dari layanan eksternal. Detail di
+  `.cursor/rules/20-domain-rules.mdc` bagian "Mekanisme trigger sync".
 
 ## Batasan keras (hard constraints)
 

@@ -69,7 +69,11 @@ prediksi-bola/
 │   │   └── PointsSummary.tsx
 │   └── ui/                            # button, card, dst (kalau pakai shadcn/ui taruh sini)
 │
+├── worker/                             # Proses terpisah, dijalankan sendiri via PM2 (instances: 1)
+│   └── index.ts                        # node-cron scheduler, import langsung dari lib/server/sync
+│
 ├── drizzle/                            # migration files (kalau pakai Drizzle)
+├── ecosystem.config.js                 # konfigurasi PM2: proses 'web' (cluster) + 'sync-worker' (fork, 1 instance)
 ├── .env.local
 ├── next.config.ts
 └── package.json
