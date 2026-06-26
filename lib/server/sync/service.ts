@@ -17,6 +17,20 @@ import {
 
 const SYNC_LOCK_KEY = 911234;
 const MATCHES_PAGE_SIZE = 100;
+/**
+ * Interval sync saat tidak ada match live (hemat quota Highlightly).
+ * Default 60 menit ≈ 24 sync/hari × 6 liga = 144 request (free tier 100/hari masih ketat —
+ * naikkan via SYNC_IDLE_INTERVAL_MINUTES di .env, mis. 120 untuk ~72 request/hari).
+ */
+const IDLE_SYNC_INTERVAL_MS =
+  (Number(process.env.SYNC_IDLE_INTERVAL_MINUTES) || 60) * 60 * 1000;
+
+let lastIdleSyncCompletedAt: number | null = null;
+
+export type SyncMatchesOptions = {
+  /** true = jalankan sync penuh; false = skip kecuali interval idle sudah lewat. */
+  frequent?: boolean;
+};
 
 type TrackedLeague = (typeof TRACKED_LEAGUES)[number];
 
@@ -157,8 +171,23 @@ async function syncSingleLeague(
   return { syncedCount, scoredMatchCount };
 }
 
-export async function syncMatchesFromProvider(): Promise<SyncMatchesResult> {
+export async function syncMatchesFromProvider(
+  options?: SyncMatchesOptions,
+): Promise<SyncMatchesResult> {
   assertHighlightlyApiKey();
+
+  // Trigger manual (API cron) tanpa options → selalu jalankan sync penuh.
+  const frequent = options?.frequent ?? true;
+
+  if (!frequent) {
+    const now = Date.now();
+    if (
+      lastIdleSyncCompletedAt !== null &&
+      now - lastIdleSyncCompletedAt < IDLE_SYNC_INTERVAL_MS
+    ) {
+      return { skipped: true, syncedCount: 0, scoredMatchCount: 0, leagueErrorCount: 0 };
+    }
+  }
 
   const gotLock = await tryAcquireSyncLock(SYNC_LOCK_KEY);
   if (!gotLock) {
@@ -186,6 +215,10 @@ export async function syncMatchesFromProvider(): Promise<SyncMatchesResult> {
           error,
         );
       }
+    }
+
+    if (!frequent) {
+      lastIdleSyncCompletedAt = Date.now();
     }
 
     return { skipped: false, syncedCount, scoredMatchCount, leagueErrorCount };

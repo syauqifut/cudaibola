@@ -49,3 +49,13 @@ export async function findMatchesForDate(
 
   return rows;
 }
+
+export async function existsLiveMatch(): Promise<boolean> {
+  const rows = await db
+    .select({ id: matches.id })
+    .from(matches)
+    .where(eq(matches.status, 'live'))
+    .limit(1);
+
+  return rows.length > 0;
+}
