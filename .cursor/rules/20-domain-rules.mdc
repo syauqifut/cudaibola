@@ -62,15 +62,24 @@ hari berdasarkan `APP_TIMEZONE`, konversi ke UTC, baru dipakai sebagai filter qu
 
 ## Cakupan "match hari ini" di homepage — jangan cuma sampai jam 00:00 lokal
 
-Supaya user tidak perlu menunggu pukul 00:00 untuk melihat match besok (kebanyakan match World
-Cup kickoff malam WIB karena perbedaan zona dengan venue), homepage menampilkan:
+Homepage default menampilkan match **hari ini**, tapi ada navigasi prev/next day (SPEC.md
+bagian 5b) — user bisa lihat tanggal lain. Penghitungan rentang di bawah berlaku untuk tanggal
+mana pun yang sedang ditampilkan (`targetDate`), dengan default `targetDate = hari ini`.
 
-- Semua match dengan `kickoffTime` antara **awal hari ini (00:00 `APP_TIMEZONE`)** sampai
-  **akhir hari ini (23:59 `APP_TIMEZONE`)** — bukan jendela 24 jam bergulir dari waktu saat ini.
+Supaya user tidak perlu menunggu pukul 00:00 untuk melihat match besok (kebanyakan match World
+Cup kickoff malam WIB karena perbedaan zona dengan venue), untuk `targetDate` yang sedang
+ditampilkan homepage menampilkan:
+
+- Semua match dengan `kickoffTime` antara **awal hari (00:00 `APP_TIMEZONE`)** sampai **akhir
+  hari (23:59 `APP_TIMEZONE`)** untuk `targetDate` itu — bukan jendela 24 jam bergulir dari
+  waktu saat ini.
 - Match yang masih `live` dari kemarin (kalau ada, kasus jarang tapi mungkin untuk pertandingan
   yang lewat tengah malam) tetap ditampilkan di paling atas terlepas dari tanggalnya — cek
-  `status === 'live'` dulu sebelum cek rentang tanggal.
-- Tidak perlu UI date-picker di MVP (lihat DESIGN.md — homepage scope-nya "hari ini" saja).
+  `status === 'live'` dulu sebelum cek rentang tanggal. **Pengecualian live-pinning ini HANYA
+  berlaku saat `targetDate` adalah hari ini**, bukan saat user navigasi ke tanggal lain (SPEC.md
+  bagian 5b; lihat juga DATABASE.md "query pattern utama").
+- Tidak perlu UI date-picker kalender penuh di MVP — cukup tombol prev/next satu hari per klik
+  (lihat DESIGN.md "Navigation bar tanggal" dan SPEC.md bagian 5b).
 
 ## Menampilkan jam ke user — selalu di `APP_TIMEZONE`, format konsisten
 
@@ -174,6 +183,10 @@ Ini keunggulan football-data.org dibanding Highlightly: competition identifier-n
 | Serie A | `SA` | Italia |
 | Ligue 1 | `FL1` | Prancis |
 
+Daftar ini FINAL: **7 kompetisi** (lihat SPEC.md bagian 1/1a). Menambah kompetisi ke-8 atau
+lebih adalah perubahan scope yang harus dikonfirmasi user dulu, dan WAJIB dicek dulu agar
+`N ≤ 10` request/menit tetap terpenuhi (lihat "Frekuensi sync").
+
 Definisikan sebagai konstanta di `lib/shared/constants.ts`:
 
 ```ts
@@ -187,7 +200,7 @@ export const TRACKED_COMPETITIONS = [
   { code: 'BL1', name: 'Bundesliga' },
   { code: 'SA',  name: 'Serie A' },
   { code: 'FL1', name: 'Ligue 1' },
-] as const;
+] as const; // 7 kompetisi, FINAL — lihat SPEC.md bagian 1/1a, jangan tambah tanpa konfirmasi
 ```
 
 Tidak ada script lookup manual yang perlu dijalankan — ini perbedaan penting dari Highlightly.
@@ -394,9 +407,10 @@ setelah lama down (data sudah basi → bootstrap ulang).
   `hasLiveMatchToday()`, flag `frequent`, atau logika "skip kalau sepi". Pola itu untuk
   quota Highlightly (100/hari) dan sudah tidak relevan dengan football-data.org.
 - Rate limit free tier: **10 request/menit**. Satu request per competition code per tick =
-  N request/cycle (N = panjang `TRACKED_COMPETITIONS`) — pastikan N ≤ 10 sebelum menambah
-  kompetisi baru. Event gol opsional (`GET /v4/matches/{id}`) hanya untuk match live/finished
-  dan hanya kalau sisa quota menit itu masih cukup setelah fetch utama.
+  N request/cycle (N = panjang `TRACKED_COMPETITIONS`, **saat ini 7** → 7 request/menit) —
+  pastikan tetap `N ≤ 10` sebelum menambah kompetisi baru. Event gol opsional
+  (`GET /v4/matches/{id}`) hanya untuk match live/finished dan hanya kalau sisa quota menit itu
+  masih cukup setelah fetch utama.
 
 ### `syncUpcomingFixtures()` — mingguan
 

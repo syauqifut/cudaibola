@@ -20,7 +20,7 @@ predictions ───┘  │
 - `seasons` adalah metadata periode leaderboard (per-kuartal kalender) — lihat SPEC.md
   bagian 5a. Setiap `prediction` terikat ke satu `season` (dikunci saat dibuat).
 - `competitions` adalah master data, diisi/diupdate saat sync, dipakai untuk grouping di
-  homepage dan urutan tampil (`priorityOrder`). Dibatasi ke 6 kompetisi (SPEC.md bagian 1a).
+  homepage dan urutan tampil (`priorityOrder`). Dibatasi ke 7 kompetisi (SPEC.md bagian 1a).
 - `matches` adalah cache lokal dari provider eksternal — kolom `providerMatchId` dan
   `lastSyncedAt` ada khusus untuk keperluan sinkronisasi, jangan dihapus.
 - `predictions` adalah satu-satunya tabel yang ditulis langsung oleh user (lewat form submit).

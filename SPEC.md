@@ -10,20 +10,21 @@ Web app untuk tebak-tebakan skor pertandingan sepak bola antar teman/komunitas, 
 
 Kompetisi yang dicakup (FINAL, daftar tertutup — lihat bagian 1a untuk aturan menambah):
 1. FIFA World Cup 2026
-2. Premier League (Inggris)
-3. La Liga (Spanyol)
-4. Bundesliga (Jerman)
-5. Serie A (Italia)
-6. Ligue 1 (Prancis)
+2. UEFA Champions League
+3. Premier League (Inggris)
+4. La Liga (Spanyol)
+5. Bundesliga (Jerman)
+6. Serie A (Italia)
+7. Ligue 1 (Prancis)
 
 ## 1a. Daftar kompetisi tertutup — jangan menambah tanpa konfirmasi
 
-Sync job HANYA mengambil data untuk 6 kompetisi di atas. Ini bukan keterbatasan teknis,
+Sync job HANYA mengambil data untuk 7 kompetisi di atas. Ini bukan keterbatasan teknis,
 melainkan keputusan scope yang sengaja dibuat sempit:
 - Membatasi jumlah kompetisi membuat budget request per menit ke football-data.org (10/menit
-  di free tier) lebih terkontrol — 6 competition codes × 1 request = 6 request/cycle, masih
+  di free tier) lebih terkontrol — 7 competition codes × 1 request = 7 request/cycle, masih
   aman dengan margin cukup.
-- Daftar `providerCompetitionId` untuk keenam liga ini WAJIB disimpan sebagai konstanta
+- Daftar `providerCompetitionId` untuk ketujuh kompetisi ini WAJIB disimpan sebagai konstanta
   eksplisit (lihat `.cursor/rules/20-domain-rules.mdc` bagian "Daftar liga"), bukan
   "ambil semua liga yang tersedia dari API".
 - Kalau user ingin menambah kompetisi lain di kemudian hari, itu perubahan scope yang harus
@@ -92,7 +93,7 @@ dengan kategori hasil akhir, terlepas dari skor persis.
 
 Leaderboard di-scope per **season**, bukan akumulasi selamanya dan bukan per-kompetisi.
 
-- Satu leaderboard gabungan mencakup semua poin dari ke-6 kompetisi (bagian 1), bukan
+- Satu leaderboard gabungan mencakup semua poin dari ke-7 kompetisi (bagian 1), bukan
   leaderboard terpisah per liga.
 - Season berdurasi **per-kuartal kalender**: Jan–Mar, Apr–Jun, Jul–Sep, Okt–Des. Tanggal mulai
   & akhir SELALU tetap (1 Januari, 1 April, 1 Juli, 1 Oktober) — tidak dihitung dari kapan app
@@ -118,7 +119,8 @@ Homepage tidak lagi terbatas menampilkan "hari ini" saja — ada navigasi tangga
 - Default saat halaman dibuka: tanggal hari ini (`APP_TIMEZONE`, lihat
   `.cursor/rules/20-domain-rules.mdc` bagian Timezone).
 - Match yang masih `live` TETAP hanya tampil di tanggal kickoff-nya yang sebenarnya saat
-  navigasi prev/next dipakai — pengecualian "match live selalu tampil di atas" pada bagian 5b
+  navigasi prev/next dipakai — pengecualian "match live selalu tampil di atas" (live-pinning,
+  lihat `.cursor/rules/20-domain-rules.mdc` bagian "Cakupan match hari ini di homepage")
   HANYA berlaku untuk tampilan default "hari ini", bukan saat user sedang melihat tanggal lain.
 - Tidak perlu date-picker kalender penuh di MVP — cukup tombol prev/next satu hari per klik.
 - Submit prediksi tetap hanya mungkin untuk match yang belum kickoff, terlepas dari tanggal
@@ -126,7 +128,7 @@ Homepage tidak lagi terbatas menampilkan "hari ini" saja — ada navigasi tangga
 
 ## 6. Fitur inti (urutan implementasi yang disarankan)
 
-1. **Sync data match** dari football-data.org v4 (6 kompetisi di bagian 1 saja) ke database
+1. **Sync data match** dari football-data.org v4 (7 kompetisi di bagian 1 saja) ke database
    sendiri — `syncUpcomingFixtures()` mingguan untuk jadwal, `syncLiveScores()` **setiap menit**
    (tanpa throttle idle). Detail di `.cursor/rules/20-domain-rules.mdc`.
 2. **Match list** di homepage, dikelompokkan per kompetisi, menampilkan status: scheduled (jam
@@ -142,10 +144,10 @@ Homepage tidak lagi terbatas menampilkan "hari ini" saja — ada navigasi tangga
 ## 7. Sumber data eksternal
 
 - Provider: **football-data.org v4 API** (`https://api.football-data.org/v4`), pindah dari
-  Highlightly karena masalah limit dan data. Free tier: 10 request/menit, mencakup 6 kompetisi
+  Highlightly karena masalah limit dan data. Free tier: 10 request/menit, mencakup 7 kompetisi
   yang sudah kita tentukan di bagian 1/1a.
-- Competition identifier berupa **string code** yang stabil (`WC`, `PL`, `PD`, `BL1`, `SA`,
-  `FL1`) — tidak perlu lookup script seperti Highlightly, code sudah terdokumentasi resmi.
+- Competition identifier berupa **string code** yang stabil (`WC`, `CL`, `PL`, `PD`, `BL1`,
+  `SA`, `FL1`) — tidak perlu lookup script seperti Highlightly, code sudah terdokumentasi resmi.
 - Sync dibagi dua: `syncLiveScores()` (**setiap menit**, tanpa throttle idle) dan
   `syncUpcomingFixtures()` (mingguan, rolling window 5 minggu). Detail di
   `.cursor/rules/20-domain-rules.mdc`.
@@ -170,7 +172,7 @@ wajib "hanya satu instance worker boleh berjalan".
 
 MVP dianggap selesai kalau:
 - [ ] User bisa buka app, isi nickname sekali, langsung lihat match list grouped by competition
-- [ ] Hanya 6 kompetisi di bagian 1 yang muncul — tidak ada liga lain yang ke-sync tanpa sengaja
+- [ ] Hanya 7 kompetisi di bagian 1 yang muncul — tidak ada liga lain yang ke-sync tanpa sengaja
 - [ ] User bisa navigasi prev/next day di homepage, default ke hari ini
 - [ ] User bisa submit prediksi skor untuk match yang belum mulai
 - [ ] Prediksi otomatis terkunci begitu match live
