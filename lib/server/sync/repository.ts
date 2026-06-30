@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, gte, lte, sql } from 'drizzle-orm';
 
 import { db } from '@/lib/db/client';
 import { competitions, matches } from '@/lib/db/schema';
@@ -39,6 +39,20 @@ export async function tryAcquireSyncLock(lockKey: number): Promise<boolean> {
 
 export async function releaseSyncLock(lockKey: number): Promise<void> {
   await db.execute(sql`SELECT pg_advisory_unlock(${lockKey})`);
+}
+
+/**
+ * Apakah ada minimal satu match dengan kickoffTime dalam rentang [from, to]?
+ * Dipakai worker untuk bootstrap (kalau kosong → jalankan syncUpcomingFixtures).
+ */
+export async function hasMatchesInRange(from: Date, to: Date): Promise<boolean> {
+  const [row] = await db
+    .select({ id: matches.id })
+    .from(matches)
+    .where(and(gte(matches.kickoffTime, from), lte(matches.kickoffTime, to)))
+    .limit(1);
+
+  return row != null;
 }
 
 export async function findMatchStatusByProviderMatchId(

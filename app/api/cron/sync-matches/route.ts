@@ -1,7 +1,9 @@
-import { syncMatchesFromProvider } from '@/lib/server/sync/service';
+import { syncLiveScores } from '@/lib/server/sync/service';
 
 /**
- * Cron endpoint: sync match data dari Highlightly ke database.
+ * Cron endpoint: trigger manual sync skor/jadwal hari ini dari football-data.org v4 ke database.
+ * Sync terjadwal normal dijalankan worker terpisah (worker/index.ts); endpoint ini hanya untuk
+ * trigger manual/debug, tetap diproteksi Bearer CRON_SECRET.
  *
  * Test lokal (dev server harus jalan: npm run dev):
  *
@@ -28,7 +30,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const result = await syncMatchesFromProvider();
+    const result = await syncLiveScores();
     return Response.json(result);
   } catch (error) {
     console.error('[cron/sync-matches]', error);

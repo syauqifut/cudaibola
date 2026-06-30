@@ -23,7 +23,7 @@ lib/
       service.ts
       repository.ts
     sync/
-      service.ts         # syncMatchesFromProvider(), dipanggil cron
+      service.ts         # syncLiveScores() & syncUpcomingFixtures(), dipanggil worker/cron
       football-data-client.ts
     identity/
       session.ts         # helper validasi/parse userId dari request (bukan auth asli)

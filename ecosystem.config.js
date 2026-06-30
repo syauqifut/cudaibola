@@ -14,8 +14,8 @@ module.exports = {
     },
     {
       name: 'cudaibola-sync',
-      script: 'node_modules/.bin/tsx',
-      args: 'worker/index.ts',
+      script: 'worker/index.ts',
+      interpreter: 'node_modules/.bin/tsx',
       cwd: __dirname,
       instances: 1,
       exec_mode: 'fork',

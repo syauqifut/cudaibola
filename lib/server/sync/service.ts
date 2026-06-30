@@ -1,13 +1,23 @@
+// Sync provider: football-data.org v4 (lihat .cursor/rules/20-domain-rules.mdc + 30-edge-cases.mdc).
+//
+// CATATAN DEPLOY (Step 3 migrasi Highlightly → football-data.org):
+// `providerCompetitionId` sekarang adalah competition CODE ('PL', 'WC', ...) — bukan lagi ID
+// numerik Highlightly. Baris `competitions` lama yang ber-providerCompetitionId numerik tidak
+// akan cocok lagi. Tidak ada migration script di step ini: saat deploy, lakukan RESYNC /
+// FRESH DB (kosongkan tabel competitions & matches lalu biarkan sync mengisi ulang) supaya
+// tidak ada baris kompetisi yatim dengan ID provider format lama.
 import { calculateAndSavePointsForMatch } from '@/lib/server/predictions/service';
-import { TRACKED_LEAGUES } from '@/lib/shared/constants';
+import { TRACKED_COMPETITIONS, type TrackedCompetition } from '@/lib/shared/constants';
 import {
-  fetchMatches,
+  fetchCompetitionMatches,
   mapProviderStatus,
-  parseScore,
-  type HighlightlyMatch,
-} from '@/lib/server/sync/highlightly-client';
+  type FetchCompetitionMatchesRange,
+  type FootballDataCompetition,
+  type FootballDataMatch,
+} from '@/lib/server/sync/football-data-client';
 import {
   findMatchStatusByProviderMatchId,
+  hasMatchesInRange,
   releaseSyncLock,
   tryAcquireSyncLock,
   upsertCompetitionAndMatch,
@@ -15,147 +25,120 @@ import {
   type UpsertMatchWithoutCompetitionInput,
 } from '@/lib/server/sync/repository';
 
-const SYNC_LOCK_KEY = 911234;
-const MATCHES_PAGE_SIZE = 100;
-/**
- * Interval sync saat tidak ada match live (hemat quota Highlightly).
- * Default 60 menit ≈ 24 sync/hari × 6 liga = 144 request (free tier 100/hari masih ketat —
- * naikkan via SYNC_IDLE_INTERVAL_MINUTES di .env, mis. 120 untuk ~72 request/hari).
- */
-const IDLE_SYNC_INTERVAL_MS =
-  (Number(process.env.SYNC_IDLE_INTERVAL_MINUTES) || 60) * 60 * 1000;
+// Advisory lock TERPISAH per fungsi supaya syncLiveScores & syncUpcomingFixtures tidak saling
+// blokir (lihat 30-edge-cases.mdc bagian 1).
+const LIVE_SYNC_LOCK_KEY = 911234;
+const FIXTURE_SYNC_LOCK_KEY = 911235;
 
-let lastIdleSyncCompletedAt: number | null = null;
+// Window jadwal syncUpcomingFixtures: 5 minggu. dateTo eksklusif → pakai +36 hari untuk
+// mencakup tepat 35 hari ke depan.
+const UPCOMING_WINDOW_DAYS = 36;
 
-export type SyncMatchesOptions = {
-  /** true = jalankan sync penuh; false = skip kecuali interval idle sudah lewat. */
-  frequent?: boolean;
-};
-
-type TrackedLeague = (typeof TRACKED_LEAGUES)[number];
-
-export type SyncMatchesResult = {
+export type SyncResult = {
   skipped: boolean;
   syncedCount: number;
   scoredMatchCount: number;
-  /** Jumlah liga yang gagal di-sync (di-skip, tidak menggagalkan sync keseluruhan). */
-  leagueErrorCount: number;
+  /** Jumlah kompetisi yang gagal di-sync (di-skip, tidak menggagalkan sync keseluruhan). */
+  competitionErrorCount: number;
 };
 
-function assertHighlightlyApiKey(): void {
-  if (!process.env.HIGHLIGHTLY_API_KEY) {
-    throw new Error('HIGHLIGHTLY_API_KEY is not set');
+const SKIPPED_RESULT: SyncResult = {
+  skipped: true,
+  syncedCount: 0,
+  scoredMatchCount: 0,
+  competitionErrorCount: 0,
+};
+
+function assertFootballDataApiKey(): void {
+  if (!process.env.FOOTBALL_DATA_API_KEY) {
+    throw new Error('FOOTBALL_DATA_API_KEY is not set');
   }
 }
 
-function getUtcDateStringsForSync(now: Date = new Date()): string[] {
-  const today = now.toISOString().slice(0, 10);
-
-  const yesterday = new Date(now);
-  yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-  const yesterdayStr = yesterday.toISOString().slice(0, 10);
-
-  return yesterdayStr === today ? [today] : [yesterdayStr, today];
+function toUtcDateString(date: Date): string {
+  return date.toISOString().slice(0, 10);
 }
 
-async function fetchAllMatchesForLeagueDate(
-  league: TrackedLeague,
-  date: string,
-): Promise<HighlightlyMatch[]> {
-  const allMatches: HighlightlyMatch[] = [];
-  let offset = 0;
+function addUtcDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
+}
 
-  while (true) {
-    const response = await fetchMatches({
-      leagueId: Number(league.providerLeagueId),
-      season: 'season' in league ? league.season : undefined,
-      date,
-      limit: MATCHES_PAGE_SIZE,
-      offset,
-    });
+function humanizeStage(stage: string): string {
+  return stage
+    .toLowerCase()
+    .split('_')
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
 
-    allMatches.push(...response.data);
-
-    const fetched = offset + response.data.length;
-    if (fetched >= response.pagination.totalCount || response.data.length === 0) {
-      break;
-    }
-
-    offset += MATCHES_PAGE_SIZE;
+/** roundName dari stage + matchday, mis. "Regular Season - 38" atau "Matchday 38". */
+function formatRoundName(
+  stage?: string | null,
+  matchday?: number | null,
+): string | null {
+  const stageLabel = stage ? humanizeStage(stage) : null;
+  if (matchday != null) {
+    return stageLabel ? `${stageLabel} - ${matchday}` : `Matchday ${matchday}`;
   }
-
-  return allMatches;
+  return stageLabel;
 }
 
 function mapCompetitionInput(
-  match: HighlightlyMatch,
-  priorityOrder: number,
+  competition: TrackedCompetition,
+  providerCompetition: FootballDataCompetition | undefined,
 ): UpsertCompetitionInput {
   return {
-    providerCompetitionId: String(match.league.id),
-    name: match.league.name,
-    logoUrl: match.league.logo ?? null,
-    priorityOrder,
+    // providerCompetitionId = competition CODE (bukan numeric id).
+    providerCompetitionId: competition.code,
+    name: providerCompetition?.name ?? competition.name,
+    logoUrl: providerCompetition?.emblem ?? null,
+    priorityOrder: competition.priorityOrder,
   };
 }
 
-function mapMatchInput(match: HighlightlyMatch): UpsertMatchWithoutCompetitionInput {
-  const status = mapProviderStatus(match.state.description);
-  const score = parseScore(match.state.score?.current);
-  const syncedAt = new Date();
+function mapMatchInput(match: FootballDataMatch): UpsertMatchWithoutCompetitionInput {
+  const status = mapProviderStatus(match.status);
+  const isScheduled = status === 'scheduled';
 
   return {
     providerMatchId: String(match.id),
-    roundName: match.round ?? null,
+    roundName: formatRoundName(match.stage, match.matchday),
     homeTeamName: match.homeTeam.name,
     awayTeamName: match.awayTeam.name,
-    homeTeamLogoUrl: match.homeTeam.logo ?? null,
-    awayTeamLogoUrl: match.awayTeam.logo ?? null,
-    homeScore: status === 'scheduled' ? null : score.home,
-    awayScore: status === 'scheduled' ? null : score.away,
+    homeTeamLogoUrl: match.homeTeam.crest ?? null,
+    awayTeamLogoUrl: match.awayTeam.crest ?? null,
+    // Skor sudah integer di fullTime; null saat match belum mulai.
+    homeScore: isScheduled ? null : (match.score.fullTime.home ?? null),
+    awayScore: isScheduled ? null : (match.score.fullTime.away ?? null),
     status,
-    minute: status === 'live' ? (match.state.clock ?? null) : null,
-    kickoffTime: new Date(match.date),
-    lastSyncedAt: syncedAt,
+    minute: status === 'live' ? (match.minute ?? null) : null,
+    // utcDate sudah UTC — simpan apa adanya.
+    kickoffTime: new Date(match.utcDate),
+    lastSyncedAt: new Date(),
   };
 }
 
-async function syncSingleLeague(
-  league: TrackedLeague,
-  dates: string[],
+async function syncSingleCompetition(
+  competition: TrackedCompetition,
+  range: FetchCompetitionMatchesRange,
 ): Promise<{ syncedCount: number; scoredMatchCount: number }> {
-  const byProviderId = new Map<number, HighlightlyMatch>();
-
-  for (const date of dates) {
-    const matchesForDate = await fetchAllMatchesForLeagueDate(league, date);
-    for (const match of matchesForDate) {
-      byProviderId.set(match.id, match);
-    }
-  }
+  const response = await fetchCompetitionMatches(competition.code, range);
+  const competitionInput = mapCompetitionInput(competition, response.competition);
 
   let syncedCount = 0;
   let scoredMatchCount = 0;
 
-  for (const providerMatch of byProviderId.values()) {
-    // Defensive guard: hanya proses match yang benar milik liga ini, jangan sampai
-    // match dari liga lain ikut masuk DB (DoD: tidak boleh ada liga di luar TRACKED_LEAGUES).
-    if (String(providerMatch.league.id) !== league.providerLeagueId) {
-      console.warn(
-        `[sync] Match ${providerMatch.id} mengembalikan league.id ${providerMatch.league.id} ` +
-          `padahal query liga ${league.name} (${league.providerLeagueId}) — di-skip.`,
-      );
-      continue;
-    }
-
-    const providerMatchId = String(providerMatch.id);
+  for (const match of response.matches) {
+    const providerMatchId = String(match.id);
+    // Baca status SEBELUM upsert untuk deteksi transisi → finished (scoring on transition).
     const previousStatus = await findMatchStatusByProviderMatchId(providerMatchId);
-    const matchInput = mapMatchInput(providerMatch);
+    const matchInput = mapMatchInput(match);
     const newStatus = matchInput.status;
 
-    const { matchId } = await upsertCompetitionAndMatch(
-      mapCompetitionInput(providerMatch, league.priorityOrder),
-      matchInput,
-    );
+    const { matchId } = await upsertCompetitionAndMatch(competitionInput, matchInput);
     syncedCount += 1;
 
     if (previousStatus !== 'finished' && newStatus === 'finished') {
@@ -171,58 +154,73 @@ async function syncSingleLeague(
   return { syncedCount, scoredMatchCount };
 }
 
-export async function syncMatchesFromProvider(
-  options?: SyncMatchesOptions,
-): Promise<SyncMatchesResult> {
-  assertHighlightlyApiKey();
+async function runSync(
+  lockKey: number,
+  label: string,
+  range: FetchCompetitionMatchesRange,
+): Promise<SyncResult> {
+  assertFootballDataApiKey();
 
-  // Trigger manual (API cron) tanpa options → selalu jalankan sync penuh.
-  const frequent = options?.frequent ?? true;
-
-  if (!frequent) {
-    const now = Date.now();
-    if (
-      lastIdleSyncCompletedAt !== null &&
-      now - lastIdleSyncCompletedAt < IDLE_SYNC_INTERVAL_MS
-    ) {
-      return { skipped: true, syncedCount: 0, scoredMatchCount: 0, leagueErrorCount: 0 };
-    }
-  }
-
-  const gotLock = await tryAcquireSyncLock(SYNC_LOCK_KEY);
+  const gotLock = await tryAcquireSyncLock(lockKey);
   if (!gotLock) {
-    console.log('Sync sebelumnya masih berjalan, skip eksekusi ini.');
-    return { skipped: true, syncedCount: 0, scoredMatchCount: 0, leagueErrorCount: 0 };
+    // Satu-satunya alasan skip: eksekusi sebelumnya masih jalan (cegah overlap tulis DB).
+    console.log(`[sync] ${label} sebelumnya masih berjalan, skip eksekusi ini.`);
+    return { ...SKIPPED_RESULT };
   }
 
   try {
-    const dates = getUtcDateStringsForSync();
     let syncedCount = 0;
     let scoredMatchCount = 0;
-    let leagueErrorCount = 0;
+    let competitionErrorCount = 0;
 
-    // Fetch per liga (bukan satu fetch tanpa filter) — scope tertutup ke 6 liga tracked.
-    for (const league of TRACKED_LEAGUES) {
+    // Satu request per competition code — scope tertutup ke TRACKED_COMPETITIONS.
+    for (const competition of TRACKED_COMPETITIONS) {
       try {
-        const result = await syncSingleLeague(league, dates);
+        const result = await syncSingleCompetition(competition, range);
         syncedCount += result.syncedCount;
         scoredMatchCount += result.scoredMatchCount;
       } catch (error) {
-        // Error per-liga tidak menggagalkan seluruh sync — log warning, lanjut liga berikutnya.
-        leagueErrorCount += 1;
+        // Error per-kompetisi tidak menggagalkan seluruh sync — log, lanjut kompetisi berikutnya.
+        competitionErrorCount += 1;
         console.warn(
-          `[sync] Liga ${league.name} (${league.providerLeagueId}) gagal di-sync, di-skip:`,
+          `[sync] ${label}: kompetisi ${competition.name} (${competition.code}) gagal di-sync, di-skip:`,
           error,
         );
       }
     }
 
-    if (!frequent) {
-      lastIdleSyncCompletedAt = Date.now();
-    }
-
-    return { skipped: false, syncedCount, scoredMatchCount, leagueErrorCount };
+    return { skipped: false, syncedCount, scoredMatchCount, competitionErrorCount };
   } finally {
-    await releaseSyncLock(SYNC_LOCK_KEY);
+    await releaseSyncLock(lockKey);
   }
 }
+
+/**
+ * Sync status & skor match HARI INI (scheduled/live/finished). Dipanggil worker setiap menit.
+ * 1 request per competition: GET /competitions/{code}/matches?dateFrom={today}&dateTo={tomorrow}.
+ */
+export async function syncLiveScores(): Promise<SyncResult> {
+  const now = new Date();
+  const range: FetchCompetitionMatchesRange = {
+    dateFrom: toUtcDateString(now),
+    // dateTo eksklusif → besok, supaya hari ini benar-benar tercakup.
+    dateTo: toUtcDateString(addUtcDays(now, 1)),
+  };
+  return runSync(LIVE_SYNC_LOCK_KEY, 'syncLiveScores', range);
+}
+
+/**
+ * Sync jadwal match ~5 minggu ke depan. Dipanggil worker mingguan (Senin 03:00 WIB).
+ * 1 request per competition: GET /competitions/{code}/matches?dateFrom={today}&dateTo={+36 hari}.
+ */
+export async function syncUpcomingFixtures(): Promise<SyncResult> {
+  const now = new Date();
+  const range: FetchCompetitionMatchesRange = {
+    dateFrom: toUtcDateString(now),
+    dateTo: toUtcDateString(addUtcDays(now, UPCOMING_WINDOW_DAYS)),
+  };
+  return runSync(FIXTURE_SYNC_LOCK_KEY, 'syncUpcomingFixtures', range);
+}
+
+/** Re-export helper bootstrap untuk worker (cek apakah tabel sudah punya jadwal). */
+export { hasMatchesInRange };
