@@ -5,15 +5,17 @@ globs: ["lib/server/**", "components/**", "app/**"]
 
 # 1. Idempotency & locking sync job (lib/server/sync/)
 
-Cron sync jalan sesering 1 menit. Kalau satu eksekusi belum selesai (network lambat ke
-Highlightly) dan eksekusi berikutnya sudah dipicu, dua proses bisa menulis ke tabel `matches`
-secara bersamaan dan saling tumpang tindih.
+Cron sync `syncLiveScores()` jalan sesering 1 menit. Kalau satu eksekusi belum selesai (network
+lambat ke football-data.org) dan eksekusi berikutnya sudah dipicu, dua proses bisa menulis ke
+tabel `matches` secara bersamaan dan saling tumpang tindih.
 
 **Wajib ada lock sederhana sebelum sync job mulai jalan:**
 
 - Tambahkan satu baris status di tabel kecil terpisah (atau pakai advisory lock Postgres,
   `pg_try_advisory_lock`) yang menandai "sync sedang berjalan".
-- Di awal `sync/service.ts`, fungsi `syncMatchesFromProvider()` HARUS:
+- Di awal `sync/service.ts`, KEDUA fungsi sync (`syncLiveScores` dan `syncUpcomingFixtures`)
+  HARUS menggunakan lock terpisah (pakai `SYNC_LOCK_KEY` berbeda untuk tiap fungsi supaya
+  keduanya tidak saling blokir):
   1. Cek apakah lock sedang aktif. Kalau iya, log "sync sebelumnya masih berjalan, skip" dan
      `return` — jangan jalankan sync kedua.
   2. Kalau tidak ada lock aktif, set lock, lalu jalankan sync.
@@ -23,21 +25,22 @@ secara bersamaan dan saling tumpang tindih.
   tambahan):
 
 ```ts
-const SYNC_LOCK_KEY = 911234; // angka unik sembarang untuk advisory lock ini
+const LIVE_SYNC_LOCK_KEY = 911234;     // untuk syncLiveScores
+const FIXTURE_SYNC_LOCK_KEY = 911235;  // untuk syncUpcomingFixtures
 
-async function syncMatchesFromProvider() {
-  const lockResult = await db.execute(sql`SELECT pg_try_advisory_lock(${SYNC_LOCK_KEY})`);
+async function syncLiveScores() {
+  const lockResult = await db.execute(sql`SELECT pg_try_advisory_lock(${LIVE_SYNC_LOCK_KEY})`);
   const gotLock = lockResult.rows[0]?.pg_try_advisory_lock;
 
   if (!gotLock) {
-    console.log('Sync sebelumnya masih berjalan, skip eksekusi ini.');
+    console.log('syncLiveScores sebelumnya masih berjalan, skip eksekusi ini.');
     return;
   }
 
   try {
-    // ...logic sync utama...
+    // ...fetch dari football-data.org, upsert matches...
   } finally {
-    await db.execute(sql`SELECT pg_advisory_unlock(${SYNC_LOCK_KEY})`);
+    await db.execute(sql`SELECT pg_advisory_unlock(${LIVE_SYNC_LOCK_KEY})`);
   }
 }
 ```
@@ -54,15 +57,16 @@ Scoring TIDAK dipicu oleh proses terpisah/terjadwal sendiri. Scoring dipicu **la
 dalam sync job**, sebagai langkah lanjutan setiap kali sync mendeteksi sebuah match baru
 berubah status menjadi `finished`.
 
-Alur wajib di `sync/service.ts`:
+Alur wajib di `sync/service.ts` (terapkan di KEDUA fungsi sync — `syncLiveScores` yang paling
+relevan karena yang mendeteksi transisi status real-time):
 
 ```ts
-async function syncMatchesFromProvider() {
-  // ...lock, fetch dari Highlightly...
+async function syncLiveScores() {
+  // ...lock, fetch dari football-data.org v4...
 
   for (const matchData of fetchedMatches) {
     const previousStatus = await getCurrentStatus(matchData.providerMatchId); // sebelum di-upsert
-    const newStatus = mapProviderStatus(matchData.state.description);
+    const newStatus = mapProviderStatus(matchData.status); // field 'status' langsung di v4
 
     await upsertMatch(matchData); // tulis status baru ke DB
 
@@ -125,8 +129,8 @@ yang terjadi. Empty state adalah undangan bertindak, bukan dead-end.
   untuk hari ini." — bukan halaman blank atau skeleton loading yang berputar selamanya.
 - Sertakan tombol "Muat ulang" yang memicu re-fetch dari `/api/matches`, bukan hard refresh
   seluruh halaman.
-- JANGAN menampilkan error teknis mentah (stack trace, response error dari Highlightly) ke
-  user. Log detail error itu di server, tampilkan pesan generik ke user.
+- JANGAN menampilkan error teknis mentah (stack trace, response error dari football-data.org)
+  ke user. Log detail error itu di server, tampilkan pesan generik ke user.
 
 **Kalau localStorage belum ada `userId`/nickname (kunjungan pertama):**
 - Ini bukan error — ini state normal pertama kali. Tampilkan prompt nickname (lihat SPEC.md

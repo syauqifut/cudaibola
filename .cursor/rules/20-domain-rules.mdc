@@ -12,14 +12,13 @@ Alasan: kalau versi terkonversi yang disimpan, data lama jadi salah begitu timez
 berubah (misal audience berubah, atau ada user dari zona lain). Dengan menyimpan UTC mentah,
 "hari ini" selalu benar untuk siapa pun yang membuka app, kapan pun dibuka.
 
-## Field `date` dari Highlightly sudah UTC — jangan dikonversi saat sync
+## Field `date` dari provider sudah UTC — jangan dikonversi saat sync
 
-`match.date` dari response Highlightly berformat ISO 8601 dengan suffix `Z`
-(contoh: `"2023-05-20T15:30:00.000Z"`) — ini SUDAH UTC. Simpan apa adanya ke kolom
-`matches.kickoffTime` (tipe `timestamp` tanpa konversi apa pun). JANGAN memanggil parameter
-query `timezone` milik Highlightly saat fetch data untuk sync — biarkan default
-(`Etc/UTC`) supaya konsisten, lalu konversi ke timezone tujuan dilakukan sendiri di kode kita,
-bukan diserahkan ke provider.
+`match.utcDate` dari response football-data.org v4 berformat ISO 8601 dengan suffix `Z`
+(contoh: `"2024-05-26T14:00:00Z"`) — ini SUDAH UTC. Simpan apa adanya ke kolom
+`matches.kickoffTime` (tipe `timestamp` tanpa konversi apa pun). JANGAN mengkonversi ke
+timezone lain sebelum disimpan — konversi ke `APP_TIMEZONE` dilakukan HANYA saat
+render/query "hari ini", bukan saat insert ke database.
 
 ## Timezone acuan aplikasi
 
@@ -135,281 +134,278 @@ function calculatePoints(predicted: {home: number, away: number}, actual: {home:
   `service.ts`, bukan hanya di UI. Anggap setiap request ke endpoint submit prediksi bisa datang
   dari luar UI normal (curl, Postman, dst).
 
-# Sync data eksternal — provider: Highlightly (lib/server/sync/)
+# Sync data eksternal — provider: football-data.org v4 (lib/server/sync/)
 
-Provider yang dipakai adalah **Highlightly Football API**. Detail teknis di bawah ini sudah
-dicek dari dokumentasi resmi — jangan menebak struktur response, ikuti ini persis.
+Provider yang dipakai adalah **football-data.org v4 API**. Pindah dari Highlightly karena
+limit dan masalah data pada provider lama. Detail teknis di bawah sudah dicek dari dokumentasi
+resmi v4 — jangan menebak struktur response, ikuti ini persis.
 
-## Aturan struktur kode (tetap berlaku, sama seperti provider lain)
+## Aturan struktur kode
 
-- Semua pemanggilan ke Highlightly HANYA terjadi di `highlightly-client.ts` dan HANYA dipanggil
-  dari `sync/service.ts` — tidak pernah langsung dari route handler, apalagi dari component.
-- Hasil sync ditulis ke tabel `matches` sendiri. Endpoint/Server Component lain selalu membaca
-  dari tabel ini, tidak pernah fetch langsung ke Highlightly.
-- API key dibaca dari `process.env.HIGHLIGHTLY_API_KEY`. Kalau env var ini tidak ada, fungsi
+- Semua pemanggilan ke football-data.org HANYA terjadi di `football-data-client.ts` dan HANYA
+  dipanggil dari `sync/service.ts` — tidak pernah langsung dari route handler atau component.
+- Hasil sync ditulis ke tabel `matches`/`competitions` sendiri. Semua baca data di app HARUS
+  dari tabel ini, tidak pernah fetch langsung ke provider.
+- API key dibaca dari `process.env.FOOTBALL_DATA_API_KEY`. Kalau env var ini tidak ada, fungsi
   sync harus throw error yang jelas saat dipanggil, bukan diam-diam gagal.
+- Rename file dari `highlightly-client.ts` menjadi `football-data-client.ts` — hapus file lama.
 
 ## Autentikasi & base URL
 
-- Base URL: `https://soccer.highlightly.net` (akses langsung Highlightly, bukan lewat RapidAPI).
-- Setiap request WAJIB menyertakan header `x-rapidapi-key: <HIGHLIGHTLY_API_KEY>`.
-  Header `x-rapidapi-host` HANYA diperlukan kalau base URL yang dipakai adalah
-  `football-highlights-api.p.rapidapi.com` (rute RapidAPI) — kalau pakai base URL Highlightly
-  langsung, header ini tidak perlu dikirim.
-- Baca header response `x-ratelimit-requests-remaining` setiap kali request berhasil dan log
-  kalau nilainya sudah rendah (< 10) — ini sinyal untuk memperlambat frekuensi sync, bukan
-  retry lebih agresif.
+- Base URL: `https://api.football-data.org/v4`
+- Setiap request WAJIB menyertakan header: `X-Auth-Token: <FOOTBALL_DATA_API_KEY>`
+- Rate limit free tier: **10 request/menit** (jauh lebih baik dari Highlightly 100/hari).
+  Monitor header response `X-Requests-Available-Minute` dan `X-RequestCounter-Reset` untuk
+  self-throttle — kalau nilai `X-Requests-Available-Minute` mendekati 0, tunda request
+  berikutnya sampai reset.
 
-## Daftar liga — scope tertutup ke 6 kompetisi (SPEC.md bagian 1/1a)
+## Daftar liga — competition codes (SUDAH DIKETAHUI, tidak perlu lookup)
 
-Sync **hanya** boleh mengambil data untuk 6 kompetisi ini:
-1. FIFA World Cup 2026
-2. Premier League (Inggris)
-3. La Liga (Spanyol)
-4. Bundesliga (Jerman)
-5. Serie A (Italia)
-6. Ligue 1 (Prancis)
+Ini keunggulan football-data.org dibanding Highlightly: competition identifier-nya berupa
+**string code** yang stabil dan didokumentasikan, bukan numeric ID yang harus di-lookup:
 
-**PENTING — nama liga ini TIDAK unik secara global, WAJIB disambiguasi dengan `countryCode`.**
-Ada banyak negara yang punya liga bernama mirip atau identik (Rusia, Ukraina, India, dan
-negara-negara lain juga punya liga bernama "Premier League"; "Liga 1" dipakai beberapa negara
-dengan ejaan beda). Lookup berdasarkan `name` saja BISA mengembalikan liga yang salah negara
-tanpa error apa pun — sync akan diam-diam jalan dengan liga yang salah sampai ketahuan ada tim
-asing yang gak masuk akal muncul di match list.
-
-Endpoint pencarian liga (`GET /leagues`) mendukung parameter `countryCode` dan `countryName`
-selain `name` — **WAJIB pakai kombinasi `name` + `countryCode`** saat lookup, bukan `name` saja:
-
-| Kompetisi | `name` untuk lookup | `countryCode` |
+| Kompetisi | Code | Keterangan |
 |---|---|---|
-| FIFA World Cup 2026 | "World Cup" | (tidak perlu, ini turnamen internasional) |
-| Premier League | "Premier League" | `GB-ENG` (Inggris — bukan `RU`, `UA`, dst) |
-| La Liga | "La Liga" | `ES` |
-| Bundesliga | "Bundesliga" | `DE` |
-| Serie A | "Serie A" | `IT` (bukan `BR` — Brasil juga punya "Serie A") |
-| Ligue 1 | "Ligue 1" | `FR` |
+| FIFA World Cup | `WC` | Turnamen internasional |
+| UEFA Champions League | `CL` | Eropa — kompetisi klub |
+| Premier League | `PL` | Inggris — tidak ambigu, code unik |
+| La Liga | `PD` | Spanyol (Primera Division) |
+| Bundesliga | `BL1` | Jerman |
+| Serie A | `SA` | Italia |
+| Ligue 1 | `FL1` | Prancis |
 
-**Referensi terverifikasi (boleh dipakai langsung, sudah dicek dari sumber resmi Highlightly):**
-- World Cup 2026 → `leagueId: 1635`
-- Premier League (Inggris) → `leagueId: 33973`, `countryCode: GB-ENG`
-
-ID untuk La Liga, Bundesliga, Serie A, Ligue 1 **belum terverifikasi** — JANGAN ditebak/diisi
-angka sembarang. Wajib dikonfirmasi via lookup sendiri sebelum dipakai:
-
-1. Buat script setup satu kali (`scripts/lookup-league-ids.ts`, tidak perlu masuk ke
-   `lib/server/`, ini cuma dijalankan manual sekali saat setup) yang memanggil
-   `GET /leagues?name={nama}&countryCode={kode}` untuk tiap baris di tabel di atas yang belum
-   ada ID terverifikasinya.
-2. **Cek manual hasil response-nya** — pastikan `country.code` dan `name` di response benar
-   cocok dengan yang dimaksud (misal pastikan Serie A yang didapat itu Italia, bukan Brasil)
-   sebelum disimpan sebagai konstanta. Jangan otomatis ambil item pertama dari hasil tanpa
-   verifikasi ini.
-3. Simpan hasil yang sudah diverifikasi sebagai konstanta eksplisit di `lib/shared/constants.ts`:
+Definisikan sebagai konstanta di `lib/shared/constants.ts`:
 
 ```ts
-// ID yang sudah TERVERIFIKASI dari lookup manual /leagues?name=...&countryCode=...
-// JANGAN diisi angka tebakan — lihat .cursor/rules/20-domain-rules.mdc bagian "Daftar liga"
-export const TRACKED_LEAGUES = [
-  { providerLeagueId: '1635', name: 'FIFA World Cup 2026', countryCode: null },
-  { providerLeagueId: '33973', name: 'Premier League', countryCode: 'GB-ENG' },
-  { providerLeagueId: 'BELUM_DIVERIFIKASI', name: 'La Liga', countryCode: 'ES' },
-  { providerLeagueId: 'BELUM_DIVERIFIKASI', name: 'Bundesliga', countryCode: 'DE' },
-  { providerLeagueId: 'BELUM_DIVERIFIKASI', name: 'Serie A', countryCode: 'IT' },
-  { providerLeagueId: 'BELUM_DIVERIFIKASI', name: 'Ligue 1', countryCode: 'FR' },
+// Competition codes football-data.org v4 — sudah terverifikasi dari dokumentasi resmi
+// Tidak perlu lookup script, tidak ada ID numerik yang perlu dicari.
+export const TRACKED_COMPETITIONS = [
+  { code: 'WC',  name: 'FIFA World Cup' },
+  { code: 'CL',  name: 'UEFA Champions League' },
+  { code: 'PL',  name: 'Premier League' },
+  { code: 'PD',  name: 'La Liga' },
+  { code: 'BL1', name: 'Bundesliga' },
+  { code: 'SA',  name: 'Serie A' },
+  { code: 'FL1', name: 'Ligue 1' },
 ] as const;
 ```
 
-4. `sync/service.ts` melakukan fetch `/matches` **per liga** dari `TRACKED_LEAGUES` (looping,
-   pakai `leagueId` sebagai primary query param yang diwajibkan endpoint), bukan satu fetch
-   tanpa filter lalu disaring belakangan — supaya tidak membuang quota request untuk liga yang
-   tidak relevan.
-5. Cek dulu apakah endpoint `/matches` mendukung filter banyak `leagueId` dalam satu request
-   (lihat dokumentasi resmi saat implementasi) — kalau bisa, lebih hemat quota daripada 6
-   request terpisah per sync cycle.
-6. Setelah `competitions` di-upsert dari hasil sync, sebagai sanity check tambahan, bandingkan
-   `competitions.name` yang tersimpan dengan daftar di tabel atas — kalau ada mismatch (misal
-   nama yang ke-resolve adalah "Serie A" tapi tim-timnya semua nama Brasil), log warning keras,
-   jangan lanjutkan sync untuk liga itu sampai `leagueId`-nya diperbaiki.
+Tidak ada script lookup manual yang perlu dijalankan — ini perbedaan penting dari Highlightly.
 
-Kalau di masa depan provider mengganti/menghapus salah satu `leagueId` (jarang tapi mungkin),
-sync untuk liga itu akan mengembalikan hasil kosong/error — tangani sebagai warning per-liga
-(skip liga itu di cycle ini, lanjutkan liga lain), bukan menggagalkan seluruh sync.
+## Dua jenis sync — jangan disatukan dalam satu fungsi
 
-## Mekanisme trigger sync — proses worker terpisah (VPS, bukan serverless)
+Sama seperti sebelumnya, sync dibagi dua dengan tujuan dan frekuensi berbeda:
 
-Deploy target adalah VPS sendiri dengan proses long-running (`next start` di balik PM2 atau
-process manager setara) — BUKAN Vercel/serverless. Ini mengubah cara sync di-trigger dibanding
-pola umum "Vercel Cron yang hit HTTP endpoint":
+1. **`syncLiveScores()`** — status & skor match hari ini (scheduled/live/finished). **WAJIB**
+   dipanggil worker setiap menit.
+2. **`syncUpcomingFixtures()`** — daftar jadwal match beberapa minggu ke depan. Mingguan.
 
-- Sync job dijalankan oleh **proses worker terpisah dari proses web server**, menggunakan
-  `node-cron` (atau `node-schedule`), bukan lewat endpoint HTTP yang di-hit dari layanan
-  eksternal.
-- Worker ini import langsung dari `lib/server/sync/service.ts` — TIDAK melakukan HTTP request
-  ke `/api/cron/...` milik aplikasinya sendiri. Endpoint `/api/cron/sync-matches` di
-  `app/api/` TETAP ada untuk keperluan trigger manual/debugging (misal dipanggil manual lewat
-  curl saat development), tapi bukan mekanisme utama di production.
-- Entry point worker: `worker/index.ts` (folder baru di root, sejajar dengan `app/` dan `lib/`)
-  — file ini yang didaftarkan sebagai proses terpisah di PM2, bukan bagian dari proses Next.js.
+### Endpoint untuk `syncLiveScores()`
+
+Satu request per competition code — cakup semua status match **hari ini** (scheduled, live,
+finished) dalam satu panggilan, supaya tetap muat rate limit saat sync jalan **setiap menit**:
+
+```
+GET /v4/competitions/{code}/matches?dateFrom={today}&dateTo={tomorrow}
+```
+
+Jalankan per competition code dari `TRACKED_COMPETITIONS`. Response sudah mencakup match
+`IN_PLAY`/`PAUSED` (live), `FINISHED` (skor akhir + trigger scoring), dan `SCHEDULED`/`TIMED`
+(transisi ke live terdeteksi di tick berikutnya).
+
+Catatan penting untuk `dateTo`: filter `dateTo` bersifat eksklusif — match dari tanggal `dateTo`
+tidak ikut diambil. Gunakan `dateTo = hari_ini + 1 hari` (tanggal besok) supaya hari ini
+benar-benar tercakup.
+
+**Jangan** pecah jadi request terpisah per status (`IN_PLAY` + `FINISHED`) — dengan
+N competition codes, itu 2N request/cycle dan melebihi free tier 10 request/menit begitu
+syncLiveScores dijadwalkan tiap menit.
+
+### Endpoint untuk `syncUpcomingFixtures()`
+
+```
+GET /v4/competitions/{code}/matches?dateFrom={today}&dateTo={today + 35 hari}
+```
+
+Jalankan per competition code, rolling window 5 minggu ke depan, setiap 7 hari (Senin 03:00
+WIB). Sama seperti sebelumnya: upsert berdasarkan `providerMatchId` menangani refresh/reschedule
+otomatis tanpa duplikat.
+
+Catatan: `dateTo` eksklusif, jadi gunakan `today + 36 hari` kalau ingin tepat 35 hari.
+
+## Mapping response football-data.org v4 → schema internal
+
+Response dari `/competitions/{code}/matches` berbentuk:
+
+```json
+{
+  "filters": {},
+  "resultSet": { "count": 10, "first": "...", "last": "...", "played": 3 },
+  "competition": { "id": 2021, "name": "Premier League", "code": "PL", "emblem": "..." },
+  "matches": [
+    {
+      "id": 200282,
+      "utcDate": "2024-05-26T14:00:00Z",
+      "status": "FINISHED",
+      "matchday": 38,
+      "stage": "REGULAR_SEASON",
+      "group": null,
+      "minute": 90,
+      "injuryTime": 4,
+      "homeTeam": { "id": 65, "name": "Manchester City FC", "shortName": "Man City", "crest": "..." },
+      "awayTeam": { "id": 66, "name": "Chelsea FC", "shortName": "Chelsea", "crest": "..." },
+      "score": {
+        "winner": "HOME_TEAM",
+        "duration": "REGULAR",
+        "fullTime": { "home": 2, "away": 0 },
+        "halfTime": { "home": 1, "away": 0 }
+      }
+    }
+  ]
+}
+```
+
+Mapping ke tabel `matches` kita (lakukan di `sync/service.ts`, bukan di repository):
+
+| Field provider | Field kita | Catatan |
+|---|---|---|
+| `match.id` | `matches.providerMatchId` | stringify ke string |
+| `competition.code` | cocokkan ke `competitions.providerCompetitionId` | gunakan code, bukan numeric id |
+| `competition.name` | `competitions.name` | |
+| `match.stage` + `match.matchday` | `matches.roundName` | format: "Regular Season - 38" atau `match.stage` kalau tidak ada matchday |
+| `match.utcDate` | `matches.kickoffTime` | sudah UTC, simpan apa adanya |
+| `match.homeTeam.name` | `matches.homeTeamName` | |
+| `match.awayTeam.name` | `matches.awayTeamName` | |
+| `match.homeTeam.crest` | `matches.homeTeamLogoUrl` | |
+| `match.awayTeam.crest` | `matches.awayTeamLogoUrl` | |
+| `match.score.fullTime.home` | `matches.homeScore` | integer, nullable kalau null |
+| `match.score.fullTime.away` | `matches.awayScore` | integer, nullable kalau null |
+| `match.minute` | `matches.minute` | nullable |
+
+**Keunggulan dibanding Highlightly: skor sudah integer (`fullTime.home`, `fullTime.away`),
+tidak perlu parsing string `"3 - 1"` lagi.**
+
+**Mapping status — WAJIB pakai fungsi terpusat:**
+
+Status dari football-data.org berbentuk UPPERCASE enum (bukan free-text seperti Highlightly):
+
+```ts
+// sync/football-data-client.ts
+function mapProviderStatus(status: string): 'scheduled' | 'live' | 'finished' {
+  const liveStatuses = ['IN_PLAY', 'PAUSED', 'HALFTIME'];
+  const finishedStatuses = ['FINISHED', 'AWARDED'];
+  const cancelledStatuses = ['POSTPONED', 'SUSPENDED', 'CANCELLED'];
+
+  if (finishedStatuses.includes(status)) return 'finished';
+  if (liveStatuses.includes(status)) return 'live';
+  // SCHEDULED, TIMED, POSTPONED, SUSPENDED, CANCELLED, dan status tak dikenal → scheduled
+  // (lebih aman tampil sebagai "belum mulai" daripada salah kunci prediksi)
+  return 'scheduled';
+}
+```
+
+Catatan: `POSTPONED`/`SUSPENDED`/`CANCELLED` di-map ke `scheduled` (bukan `finished`) supaya
+match yang ditunda tetap tampil di list dan user gak bingung match-nya hilang. Kalau suatu saat
+perlu dibedakan UI-nya (misal badge "DITUNDA"), itu iterasi berikutnya — tidak di MVP.
+
+## Event gol (opsional)
+
+Football-data.org v4 **menyertakan scorer info di dalam endpoint match itu sendiri** (tidak
+butuh endpoint events terpisah seperti Highlightly) — field `goals` ada di response
+`GET /v4/matches/{id}`:
+
+```json
+{
+  "goals": [
+    { "minute": 23, "team": { "name": "Manchester City FC" }, "scorer": { "name": "Haaland" } }
+  ]
+}
+```
+
+Fetch ini HANYA untuk match yang `status: live` atau `finished`, dengan memanggil
+`GET /v4/matches/{matchId}` — bukan endpoint terpisah. Sama seperti sebelumnya: kalau gagal
+atau kosong, jangan gagalkan sync utama, sembunyikan section "Jalannya gol" di UI.
+
+Catatan: data gol di free tier mungkin tidak selalu tersedia secara real-time saat match sedang
+berlangsung (tergantung plan) — perlakukan sebagai best-effort, tidak wajib ada.
+
+## Mekanisme trigger sync — worker terpisah (VPS)
+
+Sama seperti sebelumnya — tidak berubah karena ini keputusan infra, bukan keputusan provider:
 
 ```ts
 // worker/index.ts
 import cron from 'node-cron';
-import { syncMatchesFromProvider } from '@/lib/server/sync/service';
-import { hasLiveMatchToday } from '@/lib/server/matches/service';
+import { syncLiveScores, syncUpcomingFixtures } from '@/lib/server/sync/service';
 
-// Jalan tiap menit, tapi di dalam syncMatchesFromProvider sendiri ada logic untuk skip
-// kalau tidak ada match live (hemat quota) — lihat bagian "Frekuensi cron sync" di bawah.
-cron.schedule('* * * * *', async () => {
-  const shouldRunFrequently = await hasLiveMatchToday();
-  // syncMatchesFromProvider sendiri yang menentukan apakah benar-benar fetch ke Highlightly
-  // atau skip, berdasarkan kondisi ini -- lihat lock & frequency logic di sync/service.ts.
-  await syncMatchesFromProvider({ frequent: shouldRunFrequently });
-});
+await bootstrapIfNeeded();                         // isi data awal kalau tabel kosong
+cron.schedule('0 3 * * 1', syncUpcomingFixtures);   // jadwal: tiap Senin jam 03:00 WIB
+cron.schedule('* * * * *', syncLiveScores);         // WAJIB: tiap menit, tanpa throttle idle
 ```
 
-**WAJIB: hanya SATU instance worker yang boleh berjalan, terlepas dari berapa banyak instance
-web server.** Kalau PM2 dikonfigurasi cluster mode untuk web app (banyak instance untuk
-load balancing), worker process HARUS didaftarkan terpisah dengan `instances: 1` secara
-eksplisit di `ecosystem.config.js` (konfigurasi PM2) — JANGAN menjadikan worker bagian dari
-proses yang sama dengan web app yang di-cluster, karena itu akan menggandakan sync job sesuai
-jumlah instance (N instance = N sync job berjalan bersamaan, race condition walau sudah ada
-advisory lock di level DB — lock-nya jadi pertahanan kedua, bukan alasan untuk abai di
-level proses).
+Bootstrap logic (`bootstrapIfNeeded`) dan aturan PM2 instances:1 tetap sama — lihat bagian
+"Bootstrap" di bawah.
 
-Contoh `ecosystem.config.js` (PM2) untuk dua proses terpisah:
+**WAJIB: hanya SATU instance worker yang boleh berjalan.** Lihat `ecosystem.config.js` di
+bawah — proses `sync-worker` harus `instances: 1, exec_mode: 'fork'`.
 
 ```js
+// ecosystem.config.js
 module.exports = {
   apps: [
-    {
-      name: 'web',
-      script: 'npm',
-      args: 'start',
-      instances: 'max',      // boleh cluster, banyak instance
-      exec_mode: 'cluster',
-    },
+    { name: 'web', script: 'npm', args: 'start', instances: 'max', exec_mode: 'cluster' },
     {
       name: 'sync-worker',
       script: 'worker/index.ts',
-      interpreter: 'tsx',     // atau hasil build jadi .js, sesuaikan setup build
-      instances: 1,           // WAJIB 1 — jangan cluster proses ini
+      interpreter: 'tsx',
+      instances: 1,        // WAJIB 1
       exec_mode: 'fork',
     },
   ],
 };
 ```
 
-## Endpoint yang dipakai untuk MVP
+## Bootstrap — mengisi data pertama kali
 
-| Kebutuhan | Endpoint | Catatan |
-|---|---|---|
-| List pertandingan (untuk sync ke tabel `matches`) | `GET /matches` | Wajib isi minimal satu primary query param (`leagueId`, `date`, dst — `timezone`/`limit`/`offset` saja tidak cukup). Refresh interval dari provider: sekali per menit. |
-| Detail satu match (kalau perlu data tambahan) | `GET /matches/{id}` | Berisi `events` juga, tapi endpoint live events terpisah lebih ringan untuk polling sering. |
-| Event/jalannya gol (opsional, lihat SPEC.md & DESIGN.md) | `GET /events/{matchId}` | Refresh interval: sekali per menit. Filter response untuk `type: "Goal"` dan `"Own Goal"` saja — event lain (kartu, substitusi) tidak dipakai di MVP. |
+Saat `worker/index.ts` start, sebelum mendaftarkan cron:
 
-Endpoint `lineups`, `odds`, `predictions`, `statistics`, `box-score` TIDAK dipakai di MVP —
-sesuai keputusan skip line-up dan non-goals di SPEC.md (tidak ada fitur odds/betting).
-
-## Mapping response Highlightly → schema internal kita
-
-Response `/matches` membungkus hasil dalam `{ data: [...], pagination: {...}, plan: {...} }`.
-Tiap match punya bentuk kira-kira:
-
-```json
-{
-  "id": 489389,
-  "round": "Regular Season - 32",
-  "date": "2023-05-20T15:30:00.000Z",
-  "homeTeam": { "id": 553, "name": "Montpellier", "logo": "..." },
-  "awayTeam": { "id": 553, "name": "...", "logo": "..." },
-  "league": { "id": 133, "season": 2023, "name": "Ligue 1", "logo": "..." },
-  "state": {
-    "description": "Second half",
-    "clock": 67,
-    "score": { "current": "3 - 1" }
+```ts
+async function bootstrapIfNeeded() {
+  const hasUpcomingFixtures = await hasMatchesInRange(new Date(), addWeeks(new Date(), 5));
+  if (!hasUpcomingFixtures) {
+    console.log('Tidak ada jadwal 5 minggu ke depan, menjalankan bootstrap...');
+    await syncUpcomingFixtures();
   }
 }
 ```
 
-Mapping wajib ke tabel kita (lakukan di `sync/service.ts`, bukan di repository):
+Ini menangani first deploy (tabel kosong), restart normal (data masih ada → skip), dan restart
+setelah lama down (data sudah basi → bootstrap ulang).
 
-- `match.id` → `matches.providerMatchId` (di-stringify)
-- `match.league.id` → cocokkan/upsert ke `competitions.providerCompetitionId`
-- `match.league.name` → `competitions.name`
-- `match.round` → `matches.roundName`
-- `match.date` → `matches.kickoffTime`
-- `match.homeTeam.name` / `match.awayTeam.name` → `matches.homeTeamName` / `awayTeamName`
-- `match.homeTeam.logo` / `match.awayTeam.logo` → `matches.homeTeamLogoUrl` / `awayTeamLogoUrl`
-- `match.state.clock` → `matches.minute`
+## Frekuensi sync
 
-**Mapping status — WAJIB pakai fungsi terpusat, jangan if-else berserakan:**
+### `syncLiveScores()` — WAJIB tiap menit
 
-`match.state.description` adalah string bebas dari provider (lihat tabel state lengkap di
-dokumentasi: "Not started", "First half", "Second half", "Half time", "Extra time",
-"Break time", "Penalties", "Finished", "Finished after penalties", "Finished after extra time",
-"Postponed", "Suspended", "Cancelled", "Awarded", "Interrupted", "Abandoned", "In progress",
-"Unknown", "To be announced"). Buat satu fungsi `mapProviderStatus()` di
-`sync/highlightly-client.ts` yang memetakan semua string ini ke enum internal kita
-(`scheduled | live | finished`):
+- Worker mendaftarkan cron `* * * * *` yang memanggil `syncLiveScores()` **setiap menit**,
+  tanpa pengecualian berdasarkan ada/tidaknya match live di database.
+- **Satu-satunya** alasan melewati satu tick cron: eksekusi `syncLiveScores()` sebelumnya masih
+  berjalan (advisory lock belum lepas). Itu bukan throttle — itu cegah overlap tulis ke DB.
+- **JANGAN** implement pola throttle idle dari codebase lama: `SYNC_IDLE_INTERVAL_MINUTES`,
+  `hasLiveMatchToday()`, flag `frequent`, atau logika "skip kalau sepi". Pola itu untuk
+  quota Highlightly (100/hari) dan sudah tidak relevan dengan football-data.org.
+- Rate limit free tier: **10 request/menit**. Satu request per competition code per tick =
+  N request/cycle (N = panjang `TRACKED_COMPETITIONS`) — pastikan N ≤ 10 sebelum menambah
+  kompetisi baru. Event gol opsional (`GET /v4/matches/{id}`) hanya untuk match live/finished
+  dan hanya kalau sisa quota menit itu masih cukup setelah fetch utama.
 
-```ts
-function mapProviderStatus(description: string): 'scheduled' | 'live' | 'finished' {
-  const liveStates = ['First half', 'Second half', 'Half time', 'Extra time', 'Break time',
-                       'Penalties', 'In progress', 'Suspended', 'Interrupted'];
-  const finishedStates = ['Finished', 'Finished after penalties', 'Finished after extra time',
-                           'Awarded', 'Abandoned', 'Cancelled'];
+### `syncUpcomingFixtures()` — mingguan
 
-  if (finishedStates.includes(description)) return 'finished';
-  if (liveStates.includes(description)) return 'live';
-  return 'scheduled'; // termasuk "Not started", "Postponed", "To be announced", "Unknown"
-}
-```
+- Tiap Senin jam 03:00 WIB, N competition codes × 1 request — tidak signifikan terhadap rate
+  limit menit karena jadwal terpisah dari cron per-menit.
 
-Kalau muncul status baru yang tidak ada di daftar ini (provider menambah state baru), default
-ke `'scheduled'` daripada crash — lebih aman menampilkan match sebagai "belum mulai" daripada
-salah mengunci prediksi padahal match belum benar-benar live.
+### Self-throttle saat rate limit
 
-**Parsing skor — WAJIB di-parse, jangan disimpan sebagai string:**
+- Monitor header `X-Requests-Available-Minute` di setiap response — kalau mendekati 0 (misal
+  < 3), tahan request berikutnya dalam **siklus yang sama** sampai header
+  `X-RequestCounter-Reset` lewat. Jangan skip seluruh tick cron berikutnya kecuali lock overlap.
 
-`state.score.current` datang sebagai string `"3 - 1"` (format `"{home} - {away}"`), bukan dua
-angka terpisah. Tabel `matches` kita menyimpan `homeScore`/`awayScore` sebagai integer terpisah
-(lihat schema.ts) — parse dulu sebelum insert/update:
-
-```ts
-function parseScore(current: string | undefined): { home: number | null; away: number | null } {
-  if (!current) return { home: null, away: null };
-  const [home, away] = current.split('-').map(s => parseInt(s.trim(), 10));
-  return { home: isNaN(home) ? null : home, away: isNaN(away) ? null : away };
-}
-```
-
-Field `state.score.penalties` (skor adu penalti) TIDAK dipakai di MVP — skema poin kita
-berdasarkan skor waktu normal, bukan hasil penalti.
-
-## Event gol (opsional — konsisten dengan keputusan skip line-up)
-
-- Panggil `GET /events/{matchId}` HANYA untuk match yang sedang `live` atau `finished` — jangan
-  panggil untuk match yang masih `scheduled` (buang-buang quota).
-- Response berupa array event mentah (goal, kartu, substitusi, dst). Filter di
-  `sync/service.ts` untuk ambil `type: "Goal"` dan `type: "Own Goal"` saja sebelum dikirim ke
-  frontend.
-- Kalau request ke endpoint ini gagal atau hasilnya kosong, JANGAN gagalkan seluruh proses sync
-  match utama. Tangkap error secara terpisah, biarkan field event kosong — UI sudah dirancang
-  untuk menyembunyikan section ini kalau kosong (lihat DESIGN.md).
-- Field `player`, `time`, dan `team.name` dari event dipakai untuk tampilan "Jalannya gol" di
-  popup detail match. Field lain (`assist`, `playerId`, `substituted`) tidak dipakai di MVP.
-
-## Frekuensi cron sync (acuan dari refresh interval resmi provider)
-
-- Sync `/matches` (list + status + skor) dilakukan **per liga dari `TRACKED_LEAGUES`** (6 liga,
-  lihat bagian "Daftar liga" di atas) — bukan satu request tanpa filter.
-- Jalankan **setiap 1 menit** saat ada match yang sedang berlangsung hari itu (di salah satu
-  dari 6 liga), atau **setiap 15-30 menit** kalau tidak ada match live (hemat quota saat sepi).
-- Sync `/events/{matchId}` untuk match live: **setiap 1 menit**, hanya untuk match yang
-  `status: live`.
-- Free tier Highlightly: 100 request/hari. Karena sync per liga berarti hingga 6 request per
-  cycle (lebih kalau ditambah events per match live), hitung budget request sebelum menambah
-  frekuensi polling — jangan asumsikan quota selalu cukup tanpa dihitung dulu. Contoh kasar:
-  6 liga × 1 request/menit × 60 menit = 360 request/jam kalau dipaksa tiap menit terus-menerus
-  — jauh di atas budget harian, jadi interval "setiap 1 menit" HANYA berlaku saat benar-benar
-  ada match live, bukan default sepanjang hari.

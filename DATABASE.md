@@ -38,10 +38,10 @@ Match yang belum kickoff belum punya skor. Daripada pakai `0` sebagai default (y
 apakah itu skor asli 0-0 atau "belum mulai"?), kolom ini sengaja nullable. Cek `status` dulu
 sebelum baca skor.
 
-Catatan konkret dari provider (Highlightly): skor datang sebagai **satu string gabungan**
-`"3 - 1"` di field `state.score.current`, bukan dua angka terpisah. Parsing wajib dilakukan
-di `sync/service.ts` sebelum insert ke kolom integer `homeScore`/`awayScore` — lihat contoh
-fungsi `parseScore()` di `.cursor/rules/20-domain-rules.mdc`.
+Catatan dari provider (football-data.org v4): skor dikembalikan sebagai **integer terpisah**
+di field `score.fullTime.home` dan `score.fullTime.away` — tidak perlu parsing string.
+Nilai `null` dikembalikan provider kalau match belum dimulai, konsisten dengan kolom nullable
+di schema kita.
 
 **`pointsEarned` nullable di tabel `predictions`**
 NULL berarti "belum dihitung" (match belum selesai). Job scoring yang jalan setelah match

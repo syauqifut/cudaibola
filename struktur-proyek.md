@@ -45,8 +45,8 @@ prediksi-bola/
 │   │   │   └── repository.ts
 │   │   │
 │   │   ├── sync/
-│   │   │   ├── service.ts            # syncMatchesFromProvider() — dipanggil cron
-│   │   │   └── highlightly-client.ts  # wrapper fetch ke Highlightly Football API
+│   │   │   ├── service.ts            # syncLiveScores(), syncUpcomingFixtures() — dipanggil worker
+│   │   │   └── football-data-client.ts  # wrapper fetch ke football-data.org v4
 │   │   │
 │   │   └── auth/
 │   │       └── session.ts            # helper ambil current user di server

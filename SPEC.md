@@ -20,8 +20,9 @@ Kompetisi yang dicakup (FINAL, daftar tertutup — lihat bagian 1a untuk aturan 
 
 Sync job HANYA mengambil data untuk 6 kompetisi di atas. Ini bukan keterbatasan teknis,
 melainkan keputusan scope yang sengaja dibuat sempit:
-- Membatasi jumlah kompetisi membuat budget request harian ke Highlightly (100/hari di free
-  tier) lebih terkontrol dan mudah dihitung.
+- Membatasi jumlah kompetisi membuat budget request per menit ke football-data.org (10/menit
+  di free tier) lebih terkontrol — 6 competition codes × 1 request = 6 request/cycle, masih
+  aman dengan margin cukup.
 - Daftar `providerCompetitionId` untuk keenam liga ini WAJIB disimpan sebagai konstanta
   eksplisit (lihat `.cursor/rules/20-domain-rules.mdc` bagian "Daftar liga"), bukan
   "ambil semua liga yang tersedia dari API".
@@ -125,8 +126,9 @@ Homepage tidak lagi terbatas menampilkan "hari ini" saja — ada navigasi tangga
 
 ## 6. Fitur inti (urutan implementasi yang disarankan)
 
-1. **Sync data match** dari Highlightly (6 kompetisi di bagian 1 saja) ke database sendiri,
-   berjalan via cron job berkala (interval lebih sering saat ada match live).
+1. **Sync data match** dari football-data.org v4 (6 kompetisi di bagian 1 saja) ke database
+   sendiri — `syncUpcomingFixtures()` mingguan untuk jadwal, `syncLiveScores()` **setiap menit**
+   (tanpa throttle idle). Detail di `.cursor/rules/20-domain-rules.mdc`.
 2. **Match list** di homepage, dikelompokkan per kompetisi, menampilkan status: scheduled (jam
    kickoff) / live (menit + skor live) / finished (FT + skor). Termasuk navigasi prev/next day
    (bagian 5b).
@@ -139,20 +141,19 @@ Homepage tidak lagi terbatas menampilkan "hari ini" saja — ada navigasi tangga
 
 ## 7. Sumber data eksternal
 
-- Provider: **Highlightly Football API** (`https://soccer.highlightly.net`), free tier 100
-  request/hari, mencakup live scores, status match, dan event gol.
-- Sync HANYA mengambil data untuk 6 kompetisi di bagian 1/1a — bukan semua liga yang tersedia
-  dari provider. Daftar `providerCompetitionId` untuk keenamnya dikunci di
+- Provider: **football-data.org v4 API** (`https://api.football-data.org/v4`), pindah dari
+  Highlightly karena masalah limit dan data. Free tier: 10 request/menit, mencakup 6 kompetisi
+  yang sudah kita tentukan di bagian 1/1a.
+- Competition identifier berupa **string code** yang stabil (`WC`, `PL`, `PD`, `BL1`, `SA`,
+  `FL1`) — tidak perlu lookup script seperti Highlightly, code sudah terdokumentasi resmi.
+- Sync dibagi dua: `syncLiveScores()` (**setiap menit**, tanpa throttle idle) dan
+  `syncUpcomingFixtures()` (mingguan, rolling window 5 minggu). Detail di
   `.cursor/rules/20-domain-rules.mdc`.
-- Detail teknis lengkap (endpoint, auth header, mapping status, parsing skor, frekuensi sync)
-  ada di `.cursor/rules/20-domain-rules.mdc` bagian "Sync data eksternal — provider:
-  Highlightly" — itu sumber kebenaran teknis, jangan diulang/didupilkasi berbeda di tempat lain.
-- Jangan polling Highlightly langsung dari tiap request user — selalu lewat cache di database
-  sendiri yang di-refresh oleh cron job.
-- API key disimpan di environment variable (`HIGHLIGHTLY_API_KEY`), tidak pernah di-hardcode
+- Jangan polling football-data.org langsung dari request user — selalu lewat cache di database
+  sendiri yang di-refresh oleh sync worker.
+- API key disimpan di environment variable (`FOOTBALL_DATA_API_KEY`), tidak pernah di-hardcode
   atau di-commit.
-- Line-up pemain dan data odds/predictions dari provider ini **tidak dipakai** di MVP (lihat
-  bagian 2, non-goals, dan keputusan skip line-up).
+- Line-up dan data odds tidak dipakai di MVP (lihat bagian 2, non-goals).
 
 ## 8. Stack (lihat juga .cursor/rules/ untuk detail teknis)
 
