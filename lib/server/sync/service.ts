@@ -7,7 +7,11 @@
 // FRESH DB (kosongkan tabel competitions & matches lalu biarkan sync mengisi ulang) supaya
 // tidak ada baris kompetisi yatim dengan ID provider format lama.
 import { calculateAndSavePointsForMatch } from '@/lib/server/predictions/service';
-import { TRACKED_COMPETITIONS, type TrackedCompetition } from '@/lib/shared/constants';
+import {
+  TBD_TEAM_NAME,
+  TRACKED_COMPETITIONS,
+  type TrackedCompetition,
+} from '@/lib/shared/constants';
 import {
   fetchCompetitionMatches,
   mapProviderStatus,
@@ -99,6 +103,14 @@ function mapCompetitionInput(
   };
 }
 
+// Fixture knockout bisa punya slot tim yang belum ditentukan — provider mengirim
+// `team.name = null`. Kolom nama tim NOT NULL, jadi simpan placeholder TBD (prediksi dikunci
+// sampai kedua tim jelas, lihat submitPrediction & MatchDetailPopup).
+function resolveTeamName(name: string | null | undefined): string {
+  const trimmed = name?.trim();
+  return trimmed ? trimmed : TBD_TEAM_NAME;
+}
+
 function mapMatchInput(match: FootballDataMatch): UpsertMatchWithoutCompetitionInput {
   const status = mapProviderStatus(match.status);
   const isScheduled = status === 'scheduled';
@@ -106,10 +118,10 @@ function mapMatchInput(match: FootballDataMatch): UpsertMatchWithoutCompetitionI
   return {
     providerMatchId: String(match.id),
     roundName: formatRoundName(match.stage, match.matchday),
-    homeTeamName: match.homeTeam.name,
-    awayTeamName: match.awayTeam.name,
-    homeTeamLogoUrl: match.homeTeam.crest ?? null,
-    awayTeamLogoUrl: match.awayTeam.crest ?? null,
+    homeTeamName: resolveTeamName(match.homeTeam?.name),
+    awayTeamName: resolveTeamName(match.awayTeam?.name),
+    homeTeamLogoUrl: match.homeTeam?.crest ?? null,
+    awayTeamLogoUrl: match.awayTeam?.crest ?? null,
     // Skor sudah integer di fullTime; null saat match belum mulai.
     homeScore: isScheduled ? null : (match.score.fullTime.home ?? null),
     awayScore: isScheduled ? null : (match.score.fullTime.away ?? null),

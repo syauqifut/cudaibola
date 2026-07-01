@@ -6,6 +6,7 @@ import { useIdentity } from '@/components/identity/IdentityProvider';
 import { LiveBadge } from '@/components/match-list/LiveBadge';
 import { MatchStatusBadge } from '@/components/match-list/MatchStatusBadge';
 import { PredictionForm } from '@/components/prediction/PredictionForm';
+import { matchHasTbdTeam } from '@/lib/shared/constants';
 import { formatKickoffTime } from '@/lib/shared/format-time';
 import type { MatchWithCompetition } from '@/lib/shared/types';
 
@@ -35,6 +36,7 @@ export function MatchDetailPopup({ match, onClose }: MatchDetailPopupProps) {
   const competitionLabel =
     match.competitionShortName ?? match.competitionName;
   const isScheduled = match.status === 'scheduled';
+  const hasTbdTeam = matchHasTbdTeam(match);
 
   useEffect(() => {
     if (!identity) {
@@ -155,7 +157,13 @@ export function MatchDetailPopup({ match, onClose }: MatchDetailPopupProps) {
             <span className="flex-1 text-center font-sans">{match.awayTeamName}</span>
           </div>
 
-          {isScheduled && (
+          {isScheduled && hasTbdTeam && (
+            <p className="mt-6 border-2 border-ink bg-card-yellow px-3 py-2 font-sans text-xs">
+              Lawan belum ditentukan. Tebakan dibuka setelah kedua tim jelas.
+            </p>
+          )}
+
+          {isScheduled && !hasTbdTeam && (
             <>
               {!identity && (
                 <p className="mt-6 border-2 border-ink bg-card-yellow px-3 py-2 font-sans text-xs">

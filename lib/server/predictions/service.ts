@@ -11,6 +11,7 @@ import {
 } from '@/lib/server/predictions/repository';
 import { calculatePoints } from '@/lib/server/predictions/scoring';
 import { getCurrentSeason } from '@/lib/server/season/service';
+import { matchHasTbdTeam } from '@/lib/shared/constants';
 
 const SCORE_MIN = 0;
 const SCORE_MAX = 20;
@@ -87,6 +88,14 @@ export async function submitPrediction(
     if (match.status !== 'scheduled') {
       throw new PredictionValidationError(
         'Pertandingan sudah dimulai, tebakan tidak bisa lagi diubah.',
+      );
+    }
+
+    // Fixture knockout dengan lawan belum ditentukan (TBD) — tidak masuk akal menebak skor
+    // sebelum kedua tim jelas. Kunci sampai sync mengisi nama tim sebenarnya.
+    if (matchHasTbdTeam(match)) {
+      throw new PredictionValidationError(
+        'Lawan belum ditentukan, tebakan dibuka setelah kedua tim jelas.',
       );
     }
 

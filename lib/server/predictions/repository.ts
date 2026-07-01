@@ -18,6 +18,8 @@ export type PredictionRecord = {
 export type MatchLockRow = {
   id: string;
   status: 'scheduled' | 'live' | 'finished';
+  homeTeamName: string;
+  awayTeamName: string;
 };
 
 type DbClient = Pick<typeof db, 'select' | 'insert' | 'update'>;
@@ -30,6 +32,8 @@ export async function findMatchForUpdate(
     .select({
       id: matches.id,
       status: matches.status,
+      homeTeamName: matches.homeTeamName,
+      awayTeamName: matches.awayTeamName,
     })
     .from(matches)
     .where(eq(matches.id, matchId))
